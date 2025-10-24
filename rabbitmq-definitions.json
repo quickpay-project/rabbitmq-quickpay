@@ -1,0 +1,20 @@
+{
+  "rabbit_version": "3.12",
+  "queues": [
+    {
+      "name": "deposit_rpc",
+      "vhost": "/",
+      "durable": true,
+      "arguments": {
+        "x-dead-letter-exchange": "",
+        "x-dead-letter-routing-key": "deposit_rpc.dlq"
+      }
+    },
+    {
+      "name": "deposit_rpc.dlq",
+      "vhost": "/",
+      "durable": true,
+      "arguments": {}
+    }
+  ]
+}
