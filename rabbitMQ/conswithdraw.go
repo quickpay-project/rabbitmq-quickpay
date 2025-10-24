@@ -5,7 +5,6 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"io"
 	"log"
 	"math/rand"
@@ -90,47 +89,29 @@ RETURNING id;`
 }
 
 // ===== CALL EXTERNAL API =====
-// return: httpStatus, respBody(raw string), firstTxnID, allTxnIDs, error
-func getRandomWithdrawURLByGroup(headers map[string]interface{}) (string, error) {
-	// ✅ ดึงค่า group จาก header
-	var group string
-	if v, ok := headers["Group"]; ok {
-		switch g := v.(type) {
-		case string:
-			group = g
-		case []byte:
-			group = string(g)
-		}
-	}
-	if group == "" {
-		return "", errors.New("missing Group header")
-	}
-
-	// ✅ สร้าง key env เช่น WITHDRAW_URL_GROUP1
-	envKey := "WITHDRAW_URL_GROUP" + group
-	envValue := os.Getenv(envKey)
+// return random URL from env WITHDRAW_URL_GROUP
+func getRandomWithdrawURL(_ map[string]interface{}) (string, error) {
+	envValue := os.Getenv("WITHDRAW_URL_GROUP")
 	if envValue == "" {
-		return "", fmt.Errorf("no URLs found for group %s", group)
+		return "", errors.New("WITHDRAW_URL_GROUP not set")
 	}
 
-	// ✅ แยกเป็น slice
 	urls := strings.Split(envValue, ",")
 	if len(urls) == 0 {
-		return "", fmt.Errorf("no valid URLs in %s", envKey)
+		return "", errors.New("no valid URLs in WITHDRAW_URL_GROUP")
 	}
 
-	// ✅ random URL
 	r := rand.New(rand.NewSource(time.Now().UnixNano()))
-	return urls[r.Intn(len(urls))], nil
+	return strings.TrimSpace(urls[r.Intn(len(urls))]), nil
 }
 
 func sendToExternalWithdrawAPI(data []byte, headers map[string]interface{}) (int, string, string, []string, error) {
-	apiURL, err := getRandomWithdrawURLByGroup(headers)
+	apiURL, err := getRandomWithdrawURL(headers)
 	if err != nil {
 		return 0, "", "", nil, err
 	}
 
-	log.Printf("🌐 Withdraw API URL (Group): %s", apiURL)
+	log.Printf("🌐 Withdraw API URL: %s", apiURL)
 
 	req, err := http.NewRequest("POST", apiURL, bytes.NewBuffer(data))
 	if err != nil {
@@ -138,15 +119,14 @@ func sendToExternalWithdrawAPI(data []byte, headers map[string]interface{}) (int
 	}
 	req.Header.Set("Content-Type", "application/json")
 
-	authHeader := ""
+	// set Authorization header if exists
 	if v, ok := headers["Authorization"]; ok {
 		if token, ok := v.(string); ok {
-			authHeader = token
+			req.Header.Set("Authorization", token)
 		} else if b, ok := v.([]byte); ok {
-			authHeader = string(b)
+			req.Header.Set("Authorization", string(b))
 		}
 	}
-	req.Header.Set("Authorization", authHeader)
 
 	client := &http.Client{Timeout: 300 * time.Second}
 	resp, err := client.Do(req)
@@ -167,7 +147,7 @@ func sendToExternalWithdrawAPI(data []byte, headers map[string]interface{}) (int
 		return resp.StatusCode, string(respBytes), "", nil, err
 	}
 
-	// ✅ ดึง txn IDs
+	// extract txn IDs
 	txnIDs := make([]string, 0, len(withdrawResp.Data.Details))
 	for _, d := range withdrawResp.Data.Details {
 		if d.TransactionID != "" {
@@ -179,7 +159,6 @@ func sendToExternalWithdrawAPI(data []byte, headers map[string]interface{}) (int
 		firstTxnID = txnIDs[0]
 	}
 
-	// ✅ แปลง struct -> JSON string
 	respJSON, err := json.Marshal(withdrawResp)
 	if err != nil {
 		return resp.StatusCode, string(respBytes), "", nil, err

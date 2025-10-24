@@ -6,7 +6,6 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"io"
 	"log"
 	"math/rand"
@@ -125,48 +124,29 @@ RETURNING id;`
 }
 
 // ===== CALL EXTERNAL API =====
-// ✅ คืนค่า URL แบบสุ่มตาม Group จาก header
-func getRandomDepositURLByGroup(headers map[string]interface{}) (string, error) {
-	// ✅ ดึงค่า group จาก header
-	var group string
-	if v, ok := headers["Group"]; ok {
-		switch g := v.(type) {
-		case string:
-			group = g
-		case []byte:
-			group = string(g)
-		}
-	}
-	if group == "" {
-		return "", errors.New("missing Group header")
-	}
-
-	// ✅ สร้าง key env เช่น DEPOSIT_URL_GROUP1
-	envKey := "DEPOSIT_URL_GROUP" + group
-	envValue := os.Getenv(envKey)
+// return random URL from env DEPOSIT_URL_GROUP
+func getRandomDepositURL(_ map[string]interface{}) (string, error) {
+	envValue := os.Getenv("DEPOSIT_URL_GROUP")
 	if envValue == "" {
-		return "", fmt.Errorf("no URLs found for group %s", group)
+		return "", errors.New("DEPOSIT_URL_GROUP not set")
 	}
 
-	// ✅ แยกเป็น slice
 	urls := strings.Split(envValue, ",")
 	if len(urls) == 0 {
-		return "", fmt.Errorf("no valid URLs in %s", envKey)
+		return "", errors.New("no valid URLs in DEPOSIT_URL_GROUP")
 	}
 
-	// ✅ random URL
 	r := rand.New(rand.NewSource(time.Now().UnixNano()))
-	return urls[r.Intn(len(urls))], nil
+	return strings.TrimSpace(urls[r.Intn(len(urls))]), nil
 }
 
-// ✅ ฟังก์ชันยิง API deposit
 func sendToExternalDepositAPI(data []byte, headers map[string]interface{}) (int, string, string, []string, error) {
-	apiURL, err := getRandomDepositURLByGroup(headers)
+	apiURL, err := getRandomDepositURL(headers)
 	if err != nil {
 		return 0, "", "", nil, err
 	}
 
-	log.Printf("🌐 Deposit API URL (Group): %s", apiURL)
+	log.Printf("🌐 Deposit API URL: %s", apiURL)
 
 	req, err := http.NewRequest("POST", apiURL, bytes.NewBuffer(data))
 	if err != nil {
@@ -174,19 +154,19 @@ func sendToExternalDepositAPI(data []byte, headers map[string]interface{}) (int,
 	}
 	req.Header.Set("Content-Type", "application/json")
 
-	authHeader := ""
+	// set Authorization header if exists
 	if v, ok := headers["Authorization"]; ok {
 		if token, ok := v.(string); ok {
-			authHeader = token
+			req.Header.Set("Authorization", token)
 		} else if b, ok := v.([]byte); ok {
-			authHeader = string(b)
+			req.Header.Set("Authorization", string(b))
 		}
 	}
-	req.Header.Set("Authorization", authHeader)
 
 	client := &http.Client{Timeout: 300 * time.Second}
 	resp, err := client.Do(req)
 	if err != nil {
+		log.Printf("❌ Request failed: %v", err)
 		return 0, "", "", nil, err
 	}
 	defer resp.Body.Close()
@@ -198,9 +178,11 @@ func sendToExternalDepositAPI(data []byte, headers map[string]interface{}) (int,
 
 	var depositResp DepositResponse
 	if err := json.Unmarshal(respBytes, &depositResp); err != nil {
-		return resp.StatusCode, string(respBytes), "", nil, fmt.Errorf("cannot parse response: %w", err)
+		log.Printf("❌ Cannot parse response: %v", err)
+		return resp.StatusCode, string(respBytes), "", nil, err
 	}
 
+	// extract txn IDs
 	txnIDs := make([]string, 0, len(depositResp.Data.Details))
 	for _, d := range depositResp.Data.Details {
 		if d.TransactionID != "" {
@@ -214,7 +196,7 @@ func sendToExternalDepositAPI(data []byte, headers map[string]interface{}) (int,
 
 	respJSON, err := json.Marshal(depositResp)
 	if err != nil {
-		return resp.StatusCode, string(respBytes), firstTxnID, txnIDs, err
+		return resp.StatusCode, string(respBytes), "", nil, err
 	}
 
 	return resp.StatusCode, string(respJSON), firstTxnID, txnIDs, nil

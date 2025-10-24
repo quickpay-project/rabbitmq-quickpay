@@ -158,10 +158,10 @@ func (m Functions) Consdepositauto(w http.ResponseWriter, r *http.Request) {
 
 func (m Functions) Withdraw(w http.ResponseWriter, r *http.Request) {
 	// ✅ check IP ก่อน
-	if !isWhitelistedIP(r) {
-		http.Error(w, "Forbidden: IP not allowed", http.StatusForbidden)
-		return
-	}
+	// if !isWhitelistedIP(r) {
+	// 	http.Error(w, "Forbidden: IP not allowed", http.StatusForbidden)
+	// 	return
+	// }
 
 	body, _ := io.ReadAll(r.Body)
 	headers := make(map[string]string)
@@ -189,10 +189,10 @@ func (m Functions) Withdraw(w http.ResponseWriter, r *http.Request) {
 
 func (m Functions) Withdrawauto(w http.ResponseWriter, r *http.Request) {
 	// ✅ check IP ก่อน
-	if !isWhitelistedIP(r) {
-		http.Error(w, "Forbidden: IP not allowed", http.StatusForbidden)
-		return
-	}
+	// if !isWhitelistedIP(r) {
+	// 	http.Error(w, "Forbidden: IP not allowed", http.StatusForbidden)
+	// 	return
+	// }
 
 	body, _ := io.ReadAll(r.Body)
 	headers := make(map[string]string)
@@ -220,10 +220,10 @@ func (m Functions) Withdrawauto(w http.ResponseWriter, r *http.Request) {
 
 func (m Functions) Deposit(w http.ResponseWriter, r *http.Request) {
 	// ✅ check IP ก่อน
-	if !isWhitelistedIP(r) {
-		http.Error(w, "Forbidden: IP not allowed", http.StatusForbidden)
-		return
-	}
+	// if !isWhitelistedIP(r) {
+	// 	http.Error(w, "Forbidden: IP not allowed", http.StatusForbidden)
+	// 	return
+	// }
 
 	body, _ := io.ReadAll(r.Body)
 	headers := make(map[string]string)
@@ -251,10 +251,10 @@ func (m Functions) Deposit(w http.ResponseWriter, r *http.Request) {
 
 func (m Functions) Depositauto(w http.ResponseWriter, r *http.Request) {
 	// ✅ check IP ก่อน
-	if !isWhitelistedIP(r) {
-		http.Error(w, "Forbidden: IP not allowed", http.StatusForbidden)
-		return
-	}
+	// if !isWhitelistedIP(r) {
+	// 	http.Error(w, "Forbidden: IP not allowed", http.StatusForbidden)
+	// 	return
+	// }
 
 	body, _ := io.ReadAll(r.Body)
 	headers := make(map[string]string)
