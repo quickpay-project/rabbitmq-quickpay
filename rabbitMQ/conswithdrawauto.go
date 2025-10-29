@@ -38,25 +38,25 @@ type WithdrawautoResponse struct {
 	Code    int    `json:"code"`
 	Message string `json:"message"`
 	Data    struct {
-		OperatorOrderID string  `json:"operator_order_id"`
-		CustomerOrderID string  `json:"customer_order_id"`
-		Amount          float64 `json:"amount"`
-		AccountNumber   string  `json:"account_number"`
-		AccountName     string  `json:"account_name"`
-		BankCode        string  `json:"bank_code"`
-		BankName        string  `json:"bank_name"`
-		Cost            float64 `json:"Cost"`
-		WithdrawType    string  `json:"withdraw_type"`
-		TotalOrder      int     `json:"total_order"`
-		WithdrawDetails []struct {
+		Order struct {
+			OperatorOrderID string      `json:"operator_order_id"`
+			CustomerOrderID string      `json:"customer_order_id"`
+			Amount          float64     `json:"amount"`
+			AccountNumber   string      `json:"account_number"`
+			AccountName     string      `json:"account_name"`
+			BankCode        string      `json:"bank_code"`
+			BankName        string      `json:"bank_name"`
+			Cost            float64     `json:"Cost"`
+			WithdrawType    string      `json:"withdraw_type"`
+			TotalOrder      int         `json:"total_order"`
+			WithdrawDetails interface{} `json:"withdraw_details"` // null หรือ array ก็ได้
+		} `json:"order"`
+		Details []struct {
 			TransactionID string  `json:"transaction_id"`
 			Amount        float64 `json:"amount"`
 			CreatedAt     string  `json:"created_at"`
-			WithdrawID    *string `json:"withdraw_id"` // nullable field
-			WithdrawNo    string  `json:"withdraw_no"`
-			CallbackURL   string  `json:"callback_url"`
-			Remark        string  `json:"remark"`
-		} `json:"withdraw_details"`
+			WithdrawID    string  `json:"withdraw_id"`
+		} `json:"details"`
 	} `json:"data"`
 }
 
@@ -157,8 +157,8 @@ func sendToExternalWithdrawautoAPI(data []byte, headers map[string]interface{}) 
 	}
 
 	// extract txn IDs
-	txnIDs := make([]string, 0, len(withdrawResp.Data.WithdrawDetails))
-	for _, d := range withdrawResp.Data.WithdrawDetails {
+	txnIDs := make([]string, 0, len(withdrawResp.Data.Details))
+	for _, d := range withdrawResp.Data.Details {
 		if d.TransactionID != "" {
 			txnIDs = append(txnIDs, d.TransactionID)
 		}
