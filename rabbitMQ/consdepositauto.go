@@ -20,10 +20,15 @@ import (
 )
 
 type DepositautoRequest struct {
+	AccountName     string  `json:"account_name"`
+	AccountNumber   string  `json:"account_number"`
 	Amount          float64 `json:"amount"`
-	MID             string  `json:"mid"`
-	CustomerOrderID string  `json:"customer_order_id"`
+	BankCode        string  `json:"bank_code"`
 	CallbackURL     string  `json:"callback_url"`
+	Ref1            string  `json:"ref1"`
+	CustomerOrderID string  `json:"customer_order_id"`
+	MID             string  `json:"mid"`
+	QRType          string  `json:"qr_type"`
 }
 
 type DepositautoResponse struct {
@@ -40,25 +45,18 @@ type DepositautoResponse struct {
 			TotalQRCode     int         `json:"total_qr_code"`
 			QRDetails       interface{} `json:"qr_details"`
 			BankCode        string      `json:"bank_code"`
-			CallbackURL     interface{} `json:"callback_url"`
 		} `json:"order"`
 		Details []struct {
-			TransactionID   string      `json:"transaction_id"`
-			QRString        string      `json:"qr_string"`
-			Amount          float64     `json:"amount"`
-			NetAmount       float64     `json:"net_amount"`
-			CreatedAt       string      `json:"created_at"`
-			ExpiredAt       string      `json:"expired_at"`
-			ImageURL        string      `json:"image_url"`
-			BankCode        string      `json:"bank_code"`
-			AccountName     string      `json:"account_name"`
-			AccountNumber   string      `json:"account_number"`
-			CustomerOrderID interface{} `json:"customer_order_id"`
-			UpdatedAt       interface{} `json:"updated_at"`
-			MdrAmount       interface{} `json:"mdr_amount"`
-			FeeAmount       interface{} `json:"fee_amount"`
-			VATAmount       interface{} `json:"vat_amount"`
-			WHTAmount       interface{} `json:"wht_amount"`
+			TransactionID string  `json:"transaction_id"`
+			QRString      string  `json:"qr_string"`
+			Amount        float64 `json:"amount"`
+			NetAmount     float64 `json:"net_amount"`
+			CreatedAt     string  `json:"created_at"`
+			ExpiredAt     string  `json:"expired_at"`
+			ImageURL      string  `json:"image_url"`
+			BankCode      string  `json:"bank_code"`
+			AccountName   string  `json:"account_name"`
+			AccountNumber string  `json:"account_number"`
 		} `json:"details"`
 	} `json:"data"`
 }

@@ -19,35 +19,44 @@ import (
 )
 
 type WithdrawautoRequest struct {
-	Amount          float64 `json:"amount"`
-	MID             string  `json:"mid"`
 	CustomerOrderID string  `json:"customer_order_id"`
+	MID             string  `json:"mid"`
+	AccountNumber   string  `json:"account_number"`
+	BankCode        string  `json:"bank_code"`
+	BankName        string  `json:"bank_name"`
+	AccountName     string  `json:"account_name"`
+	Amount          float64 `json:"amount"`
+	Cost            float64 `json:"cost"`
+	WithdrawType    string  `json:"withdraw_type"`
+	Settlement      string  `json:"settlement"`
+	NonFundedType   string  `json:"non_funded_type"`
 	CallbackURL     string  `json:"callback_url"`
+	Remark          string  `json:"remark"`
 }
 
 type WithdrawautoResponse struct {
 	Code    int    `json:"code"`
 	Message string `json:"message"`
 	Data    struct {
-		Order struct {
-			Cost            float64     `json:"Cost"`
-			Amount          float64     `json:"amount"`
-			BankCode        string      `json:"bank_code"`
-			BankName        string      `json:"bank_name"`
-			TotalOrder      int         `json:"total_order"`
-			AccountName     string      `json:"account_name"`
-			WithdrawType    string      `json:"withdraw_type"`
-			AccountNumber   string      `json:"account_number"`
-			WithdrawDetails interface{} `json:"withdraw_details"`
-			CustomerOrderID string      `json:"customer_order_id"`
-			OperatorOrderID string      `json:"operator_order_id"`
-		} `json:"order"`
-		Details []struct {
+		OperatorOrderID string  `json:"operator_order_id"`
+		CustomerOrderID string  `json:"customer_order_id"`
+		Amount          float64 `json:"amount"`
+		AccountNumber   string  `json:"account_number"`
+		AccountName     string  `json:"account_name"`
+		BankCode        string  `json:"bank_code"`
+		BankName        string  `json:"bank_name"`
+		Cost            float64 `json:"Cost"`
+		WithdrawType    string  `json:"withdraw_type"`
+		TotalOrder      int     `json:"total_order"`
+		WithdrawDetails []struct {
+			TransactionID string  `json:"transaction_id"`
 			Amount        float64 `json:"amount"`
 			CreatedAt     string  `json:"created_at"`
-			WithdrawID    string  `json:"withdraw_id"`
-			TransactionID string  `json:"transaction_id"`
-		} `json:"details"`
+			WithdrawID    *string `json:"withdraw_id"` // nullable field
+			WithdrawNo    string  `json:"withdraw_no"`
+			CallbackURL   string  `json:"callback_url"`
+			Remark        string  `json:"remark"`
+		} `json:"withdraw_details"`
 	} `json:"data"`
 }
 

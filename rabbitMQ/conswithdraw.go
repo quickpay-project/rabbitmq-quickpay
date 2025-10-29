@@ -19,10 +19,19 @@ import (
 )
 
 type WithdrawRequest struct {
-	Amount          float64 `json:"amount"`
-	MID             string  `json:"mid"`
 	CustomerOrderID string  `json:"customer_order_id"`
+	MID             string  `json:"mid"`
+	AccountNumber   string  `json:"account_number"`
+	BankCode        string  `json:"bank_code"`
+	BankName        string  `json:"bank_name"`
+	AccountName     string  `json:"account_name"`
+	Amount          float64 `json:"amount"`
+	Cost            float64 `json:"cost"`
+	WithdrawType    string  `json:"withdraw_type"`
+	Settlement      string  `json:"settlement"`
+	NonFundedType   string  `json:"non_funded_type"`
 	CallbackURL     string  `json:"callback_url"`
+	Remark          string  `json:"remark"`
 }
 
 type WithdrawResponse struct {
@@ -30,23 +39,23 @@ type WithdrawResponse struct {
 	Message string `json:"message"`
 	Data    struct {
 		Order struct {
-			Cost            float64     `json:"Cost"`
+			OperatorOrderID string      `json:"operator_order_id"`
+			CustomerOrderID string      `json:"customer_order_id"`
 			Amount          float64     `json:"amount"`
+			AccountNumber   string      `json:"account_number"`
+			AccountName     string      `json:"account_name"`
 			BankCode        string      `json:"bank_code"`
 			BankName        string      `json:"bank_name"`
-			TotalOrder      int         `json:"total_order"`
-			AccountName     string      `json:"account_name"`
+			Cost            float64     `json:"Cost"`
 			WithdrawType    string      `json:"withdraw_type"`
-			AccountNumber   string      `json:"account_number"`
+			TotalOrder      int         `json:"total_order"`
 			WithdrawDetails interface{} `json:"withdraw_details"`
-			CustomerOrderID string      `json:"customer_order_id"`
-			OperatorOrderID string      `json:"operator_order_id"`
 		} `json:"order"`
 		Details []struct {
+			TransactionID string  `json:"transaction_id"`
 			Amount        float64 `json:"amount"`
 			CreatedAt     string  `json:"created_at"`
 			WithdrawID    string  `json:"withdraw_id"`
-			TransactionID string  `json:"transaction_id"`
 		} `json:"details"`
 	} `json:"data"`
 }
