@@ -157,8 +157,8 @@ func sendToExternalWithdrawautoAPI(data []byte, headers map[string]interface{}) 
 	}
 
 	// extract txn IDs
-	txnIDs := make([]string, 0, len(withdrawResp.Data.Details))
-	for _, d := range withdrawResp.Data.Details {
+	txnIDs := make([]string, 0, len(withdrawResp.Data.WithdrawDetails))
+	for _, d := range withdrawResp.Data.WithdrawDetails {
 		if d.TransactionID != "" {
 			txnIDs = append(txnIDs, d.TransactionID)
 		}
