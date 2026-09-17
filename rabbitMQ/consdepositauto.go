@@ -47,16 +47,19 @@ type DepositautoResponse struct {
 			BankCode        string      `json:"bank_code"`
 		} `json:"order"`
 		Details []struct {
-			TransactionID string  `json:"transaction_id"`
-			QRString      string  `json:"qr_string"`
-			Amount        float64 `json:"amount"`
-			NetAmount     float64 `json:"net_amount"`
-			CreatedAt     string  `json:"created_at"`
-			ExpiredAt     string  `json:"expired_at"`
-			ImageURL      string  `json:"image_url"`
-			BankCode      string  `json:"bank_code"`
-			AccountName   string  `json:"account_name"`
-			AccountNumber string  `json:"account_number"`
+			TransactionID         string  `json:"transaction_id"`
+			QRString              string  `json:"qr_string"`
+			Amount                float64 `json:"amount"`
+			NetAmount             float64 `json:"net_amount"`
+			CreatedAt             string  `json:"created_at"`
+			ExpiredAt             string  `json:"expired_at"`
+			ImageURL              string  `json:"image_url"`
+			BankCode              string  `json:"bank_code"`
+			AccountName           string  `json:"account_name"`
+			AccountNumber         string  `json:"account_number"`
+			ReceiverAccountName   string  `json:"receiver_account_name,omitempty"`
+			ReceiverAccountNumber string  `json:"receiver_account_number,omitempty"`
+			ReceiverBankCode      string  `json:"receiver_bank_code,omitempty"`
 		} `json:"details"`
 	} `json:"data"`
 }

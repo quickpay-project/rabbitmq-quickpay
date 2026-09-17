@@ -1,4 +1,4 @@
-﻿package controller
+package controller
 
 import (
 	"fmt"
@@ -37,22 +37,25 @@ type DepositResponse struct {
 			CallbackURL     interface{} `json:"callback_url"`
 		} `json:"order"`
 		Details []struct {
-			TransactionID   string      `json:"transaction_id"`
-			QRString        string      `json:"qr_string"`
-			Amount          float64     `json:"amount"`
-			NetAmount       float64     `json:"net_amount"`
-			CreatedAt       string      `json:"created_at"`
-			ExpiredAt       string      `json:"expired_at"`
-			ImageURL        string      `json:"image_url"`
-			BankCode        string      `json:"bank_code"`
-			AccountName     string      `json:"account_name"`
-			AccountNumber   string      `json:"account_number"`
-			CustomerOrderID interface{} `json:"customer_order_id"`
-			UpdatedAt       interface{} `json:"updated_at"`
-			MdrAmount       interface{} `json:"mdr_amount"`
-			FeeAmount       interface{} `json:"fee_amount"`
-			VATAmount       interface{} `json:"vat_amount"`
-			WHTAmount       interface{} `json:"wht_amount"`
+			TransactionID         string      `json:"transaction_id"`
+			QRString              string      `json:"qr_string"`
+			Amount                float64     `json:"amount"`
+			NetAmount             float64     `json:"net_amount"`
+			CreatedAt             string      `json:"created_at"`
+			ExpiredAt             string      `json:"expired_at"`
+			ImageURL              string      `json:"image_url"`
+			BankCode              string      `json:"bank_code"`
+			AccountName           string      `json:"account_name"`
+			AccountNumber         string      `json:"account_number"`
+			ReceiverAccountName   string      `json:"receiver_account_name,omitempty"`
+			ReceiverAccountNumber string      `json:"receiver_account_number,omitempty"`
+			ReceiverBankCode      string      `json:"receiver_bank_code,omitempty"`
+			CustomerOrderID       interface{} `json:"customer_order_id"`
+			UpdatedAt             interface{} `json:"updated_at"`
+			MdrAmount             interface{} `json:"mdr_amount"`
+			FeeAmount             interface{} `json:"fee_amount"`
+			VATAmount             interface{} `json:"vat_amount"`
+			WHTAmount             interface{} `json:"wht_amount"`
 		} `json:"details"`
 	} `json:"data"`
 }

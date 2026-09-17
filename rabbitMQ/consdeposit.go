@@ -39,16 +39,19 @@ type DepositResponse struct {
 	Message string `json:"message"`
 	Data    struct {
 		Details []struct {
-			AccountName   string  `json:"account_name"`
-			AccountNumber string  `json:"account_number"`
-			Amount        float64 `json:"amount"`
-			BankCode      string  `json:"bank_code"`
-			CreatedAt     string  `json:"created_at"`
-			ExpiredAt     string  `json:"expired_at"`
-			ImageURL      string  `json:"image_url"`
-			NetAmount     float64 `json:"net_amount"`
-			QRString      string  `json:"qr_string"`
-			TransactionID string  `json:"transaction_id"`
+			AccountName           string  `json:"account_name"`
+			AccountNumber         string  `json:"account_number"`
+			Amount                float64 `json:"amount"`
+			BankCode              string  `json:"bank_code"`
+			CreatedAt             string  `json:"created_at"`
+			ExpiredAt             string  `json:"expired_at"`
+			ImageURL              string  `json:"image_url"`
+			NetAmount             float64 `json:"net_amount"`
+			QRString              string  `json:"qr_string"`
+			ReceiverAccountName   string  `json:"receiver_account_name,omitempty"`
+			ReceiverAccountNumber string  `json:"receiver_account_number,omitempty"`
+			ReceiverBankCode      string  `json:"receiver_bank_code,omitempty"`
+			TransactionID         string  `json:"transaction_id"`
 		} `json:"details"`
 		Order struct {
 			AccountName     string      `json:"account_name"`
