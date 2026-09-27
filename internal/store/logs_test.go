@@ -96,13 +96,31 @@ func TestRecordAttemptsWritesEveryTry(t *testing.T) {
 
 	var url string
 	var outcome string
+	var body1 sql.NullString
 	err = db.QueryRow(
-		`SELECT url, outcome FROM attempt_logs WHERE trace_id = $1 AND seq = 1`, id).Scan(&url, &outcome)
+		`SELECT url, outcome, response_body FROM attempt_logs WHERE trace_id = $1 AND seq = 1`,
+		id).Scan(&url, &outcome, &body1)
 	if err != nil {
 		t.Fatalf("อ่าน attempt seq 1: %v", err)
 	}
 	if outcome != string(model.OutcomeRetryable) {
 		t.Errorf("outcome = %q, want retryable", outcome)
+	}
+	// seq 1 ไม่ได้ส่ง ResponseBody มา ต้องเป็น NULL — ถ้าโผล่เป็น "bad gateway"
+	// แปลว่า placeholder ของ multi-row INSERT เลื่อนไปคนละคอลัมน์
+	if body1.Valid {
+		t.Errorf("response_body ของ seq 1 = %q, want NULL", body1.String)
+	}
+
+	var body2 sql.NullString
+	err = db.QueryRow(
+		`SELECT response_body FROM attempt_logs WHERE trace_id = $1 AND seq = 2`, id).Scan(&body2)
+	if err != nil {
+		t.Fatalf("อ่าน attempt seq 2: %v", err)
+	}
+	if !body2.Valid || body2.String != `{"code":0}` {
+		t.Errorf("response_body ของ seq 2 = %v (valid=%v), want {\"code\":0} — "+
+			"ต้องถูกเขียนลงไปพร้อม INSERT ก้อนเดียวกัน", body2.String, body2.Valid)
 	}
 }
 

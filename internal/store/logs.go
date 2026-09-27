@@ -2,7 +2,6 @@ package store
 
 import (
 	"context"
-	"database/sql"
 	"fmt"
 	"strings"
 
@@ -52,33 +51,25 @@ func (s *Store) RecordAttempts(ctx context.Context, traceID string, attempts []A
 		placeholders []string
 		args         []any
 	)
+	// response_body อยู่ในคอลัมน์ชุดเดียวกัน ไม่แยกไป UPDATE ตามหลัง
+	// เพราะ attempt ที่สำเร็จมี response body แทบทุกครั้ง แบบแยกจึงกลายเป็น 1 INSERT + N UPDATE
+	// นอกจากช้ากว่าแล้ว ถ้า UPDATE ตัวท้าย ๆ ล้ม แถวก่อนหน้าจะถูก commit ไปแล้วโดยไม่มี response_body
+	// แต่ทั้ง call คืน error ทำให้แยกไม่ออกว่า attempt ไม่ถูกบันทึกเลยหรือบันทึกแล้วแต่ response หาย
+	// คำสั่งเดียวทำให้ผลมีแค่สองแบบ: ทุกแถวครบ หรือไม่มีแถวไหนเลย
 	for i, a := range attempts {
-		n := i * 8
+		n := i * 9
 		placeholders = append(placeholders, fmt.Sprintf(
-			"($%d,$%d,NULLIF($%d,0),$%d,NULLIF($%d,0),$%d,$%d,NULLIF($%d,''))",
-			n+1, n+2, n+3, n+4, n+5, n+6, n+7, n+8))
+			"($%d,$%d,NULLIF($%d,0),$%d,NULLIF($%d,0),$%d,$%d,NULLIF($%d,''),NULLIF($%d,''))",
+			n+1, n+2, n+3, n+4, n+5, n+6, n+7, n+8, n+9))
 		args = append(args, traceID, a.Seq, a.URLID, a.URL,
-			a.HTTPStatus, a.DurationMS, string(a.Outcome), a.ErrMessage)
+			a.HTTPStatus, a.DurationMS, string(a.Outcome), a.ResponseBody, a.ErrMessage)
 	}
-	// response_body เก็บแยกเพราะเป็น TEXT ธรรมดา ไม่ต้อง validate JSON
 	query := `INSERT INTO attempt_logs
-	  (trace_id, seq, message_group_url_id, url, http_status, duration_ms, outcome, error_message)
+	  (trace_id, seq, message_group_url_id, url, http_status, duration_ms, outcome,
+	   response_body, error_message)
 	  VALUES ` + strings.Join(placeholders, ",")
-	if _, err := s.db.ExecContext(ctx, query, args...); err != nil {
-		return err
-	}
-
-	for _, a := range attempts {
-		if a.ResponseBody == "" {
-			continue
-		}
-		if _, err := s.db.ExecContext(ctx,
-			`UPDATE attempt_logs SET response_body = $3 WHERE trace_id = $1 AND seq = $2`,
-			traceID, a.Seq, a.ResponseBody); err != nil {
-			return err
-		}
-	}
-	return nil
+	_, err := s.db.ExecContext(ctx, query, args...)
+	return err
 }
 
 type FinishRequestInput struct {
@@ -128,5 +119,3 @@ func nullUUID(s string) any {
 	}
 	return s
 }
-
-var _ = sql.ErrNoRows
