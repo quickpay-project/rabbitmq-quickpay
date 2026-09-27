@@ -29,12 +29,18 @@ func Diff(desired []model.GroupSpec, actual map[string]flow.Entry) []Action {
 	seen := map[string]bool{}
 
 	for _, want := range desired {
+		// ต้องทำก่อนทุกอย่างและไม่มีเงื่อนไข: id ที่ DB ยังบอกว่าต้องมี ถือว่า "เห็นแล้ว" เสมอ
+		// แม้จะถูกข้ามด้วยเหตุชื่อผิด ถ้าตั้งบรรทัดนี้หลัง continue ลูปที่สองจะคิดว่ามันหายไปจาก
+		// desired แล้วออก Stop ตามมา = drain แล้ว remove consumer ที่กำลังรับออเดอร์จริง
+		// เพียงเพราะมีคนพิมพ์ชื่อผิดใน DB
+		seen[want.ID] = true
+
 		if err := want.ValidateName(); err != nil {
 			// ข้ามตัวที่ชื่อใช้ไม่ได้ แต่ตัวอื่นต้องทำงานต่อได้ตามปกติ
+			// ตัวที่รันอยู่แล้วจะถูกปล่อยไว้เฉย ๆ ไม่มี action อื่นตามมา
 			actions = append(actions, Action{Kind: Skip, ID: want.ID, Spec: want, Reason: err.Error()})
 			continue
 		}
-		seen[want.ID] = true
 
 		have, running := actual[want.ID]
 		switch {

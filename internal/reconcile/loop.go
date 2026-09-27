@@ -24,6 +24,19 @@ type Loop struct {
 	Logf     func(string, ...any)
 }
 
+// defaultInterval ใช้เมื่อ Interval ไม่ได้ตั้งมา — ตรงกับ default ของ RECONCILE_INTERVAL ใน config
+const defaultInterval = 30 * time.Second
+
+// logf กัน Loop ที่ประกอบมาไม่ครบไม่ให้ panic เหมือนที่ flow.New default Logf เป็น no-op
+// ถ้า reconcile loop panic ระบบ dynamic ตายยกชุด: ไม่มีใครกู้ flow ที่ตาย ไม่มีใครรับ group ใหม่
+// การเงียบไปหนึ่งบรรทัด log แลกกับการที่ loop ยังเดินต่อได้ เป็นการแลกที่คุ้มกว่ามาก
+func (l *Loop) logf(format string, args ...any) {
+	if l.Logf == nil {
+		return
+	}
+	l.Logf(format, args...)
+}
+
 // Once ทำ reconcile หนึ่งรอบ ใช้ทั้งตอน start (แบบ sync) และในลูป
 func (l *Loop) Once(ctx context.Context) error {
 	desired, err := l.Loader.LoadGroups(ctx)
@@ -39,7 +52,7 @@ func (l *Loop) Once(ctx context.Context) error {
 func (l *Loop) apply(ctx context.Context, a Action) {
 	switch a.Kind {
 	case Skip:
-		l.Logf("⏭  ข้าม group %s: %s", a.Spec.Name, a.Reason)
+		l.logf("⏭  ข้าม group %s: %s", a.Spec.Name, a.Reason)
 
 	case Start:
 		l.start(ctx, a.Spec)
@@ -48,16 +61,16 @@ func (l *Loop) apply(ctx context.Context, a Action) {
 		if f, _, ok := l.Registry.Get(a.ID); ok {
 			f.UpdateSpec(a.Spec)
 			l.Registry.SetState(a.ID, stateFor(a.Spec))
-			l.Logf("🔄 %s: อัปเดต url/config โดยไม่ restart", a.Spec.Name)
+			l.logf("🔄 %s: อัปเดต url/config โดยไม่ restart", a.Spec.Name)
 		}
 
 	case Restart:
-		l.Logf("♻️  %s: restart (%s)", a.Spec.Name, a.Reason)
+		l.logf("♻️  %s: restart (%s)", a.Spec.Name, a.Reason)
 		l.stop(a.ID)
 		l.start(ctx, a.Spec)
 
 	case Stop:
-		l.Logf("🛑 %s: ปิด (%s)", a.Spec.Name, a.Reason)
+		l.logf("🛑 %s: ปิด (%s)", a.Spec.Name, a.Reason)
 		l.stop(a.ID)
 	}
 }
@@ -65,7 +78,7 @@ func (l *Loop) apply(ctx context.Context, a Action) {
 func (l *Loop) start(ctx context.Context, spec model.GroupSpec) {
 	f, err := l.Factory(spec)
 	if err != nil {
-		l.Logf("❌ %s: สร้าง flow ไม่สำเร็จ: %v", spec.Name, err)
+		l.logf("❌ %s: สร้าง flow ไม่สำเร็จ: %v", spec.Name, err)
 		return
 	}
 	// ต้อง Put ด้วยสถานะสุดท้ายก่อนสตาร์ท goroutine
@@ -77,16 +90,16 @@ func (l *Loop) start(ctx context.Context, spec model.GroupSpec) {
 	go func() {
 		// Run คืนค่าเมื่อ channel ปิด — ถือเป็นการตายที่ต้องกู้ในรอบถัดไป
 		if err := f.Run(ctx); err != nil {
-			l.Logf("❌ %s: flow หยุดพร้อม error: %v", spec.Name, err)
+			l.logf("❌ %s: flow หยุดพร้อม error: %v", spec.Name, err)
 		} else if !f.Draining() {
-			l.Logf("⏹  %s: flow หยุดเอง จะกู้ในรอบ reconcile ถัดไป", spec.Name)
+			l.logf("⏹  %s: flow หยุดเอง จะกู้ในรอบ reconcile ถัดไป", spec.Name)
 		}
 		if !f.Draining() {
 			l.Registry.SetState(spec.ID, flow.StateFailed)
 		}
 	}()
 
-	l.Logf("▶️  %s: ทำงานแล้ว (worker=%d, url=%d)", spec.Name, spec.WorkerCount, len(spec.URLs))
+	l.logf("▶️  %s: ทำงานแล้ว (worker=%d, url=%d)", spec.Name, spec.WorkerCount, len(spec.URLs))
 }
 
 func (l *Loop) stop(id string) {
@@ -96,7 +109,7 @@ func (l *Loop) stop(id string) {
 	}
 	l.Registry.SetState(id, flow.StateDraining)
 	if err := f.Drain(l.Drain); err != nil {
-		l.Logf("⚠️  drain ไม่จบในเวลา: %v", err)
+		l.logf("⚠️  drain ไม่จบในเวลา: %v", err)
 	}
 	l.Registry.Remove(id)
 }
@@ -110,7 +123,13 @@ func stateFor(s model.GroupSpec) flow.State {
 
 // Run วน reconcile จนกว่า ctx จะถูกยกเลิก
 func (l *Loop) Run(ctx context.Context) {
-	t := time.NewTicker(l.Interval)
+	// time.NewTicker panic ถ้า d <= 0 — ห้ามให้ loop ตายตอนคลอดเพราะ config ที่ประกอบมาไม่ครบ
+	interval := l.Interval
+	if interval <= 0 {
+		l.logf("⚠️  reconcile interval = %v ใช้ไม่ได้ ใช้ค่า default %v แทน", l.Interval, defaultInterval)
+		interval = defaultInterval
+	}
+	t := time.NewTicker(interval)
 	defer t.Stop()
 	for {
 		select {
@@ -118,7 +137,7 @@ func (l *Loop) Run(ctx context.Context) {
 			return
 		case <-t.C:
 			if err := l.Once(ctx); err != nil {
-				l.Logf("⚠️  reconcile ล้มเหลว: %v", err)
+				l.logf("⚠️  reconcile ล้มเหลว: %v", err)
 			}
 		}
 	}

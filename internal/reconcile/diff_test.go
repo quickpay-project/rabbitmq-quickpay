@@ -122,3 +122,27 @@ func TestReservedNameIsSkipped(t *testing.T) {
 		t.Fatalf("action = %+v, want Skip", a)
 	}
 }
+
+// Regression — group ที่รันอยู่ดี ๆ แล้วมีคนไปแก้ชื่อใน DB ให้ผิดกติกา ต้องได้แค่ Skip
+// ห้ามมี Stop โผล่มาเด็ดขาด ไม่งั้น apply จะ drain แล้ว remove consumer ที่กำลังรับออเดอร์จริง
+// ทิ้งเพียงเพราะมีคนพิมพ์ชื่อผิด — ความเสียหายชนิดเดียวกับที่เคส rename กันไว้
+func TestInvalidNameOnRunningFlowIsSkippedNotStopped(t *testing.T) {
+	running := spec("g1", "withdraw", 50, "https://a")
+	renamedBad := spec("g1", "Withdraw Prod", 50, "https://a")
+
+	actions := Diff([]model.GroupSpec{renamedBad},
+		map[string]flow.Entry{"g1": entryOf(running, flow.StateRunning)})
+
+	for _, a := range actions {
+		if a.Kind == Stop {
+			t.Fatalf("เจอ Stop (%+v) — flow ที่รันอยู่ต้องไม่ถูกฆ่าเพราะชื่อใน DB ผิดกติกา", a)
+		}
+	}
+	a := only(t, actions)
+	if a.Kind != Skip {
+		t.Fatalf("action = %+v, want Skip เท่านั้น", a)
+	}
+	if a.Reason == "" {
+		t.Error("Skip ต้องมีเหตุผลให้ log")
+	}
+}
