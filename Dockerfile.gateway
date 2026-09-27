@@ -1,0 +1,18 @@
+# ---- build ----
+FROM golang:1.23-alpine AS build
+WORKDIR /src
+COPY go.mod go.sum ./
+RUN go mod download
+COPY . .
+RUN CGO_ENABLED=0 GOTOOLCHAIN=local \
+    go build -trimpath -ldflags="-s -w" -o /out/gateway ./cmd/gateway
+
+# ---- runtime ----
+FROM alpine:3.20
+# ca-certificates จำเป็นสำหรับต่อ https ไป upstream, tzdata เพราะ DSN ตั้ง TimeZone=Asia/Bangkok
+RUN apk add --no-cache ca-certificates tzdata \
+ && adduser -D -u 10001 app
+COPY --from=build /out/gateway /usr/local/bin/gateway
+USER app
+EXPOSE 4000
+ENTRYPOINT ["/usr/local/bin/gateway"]
