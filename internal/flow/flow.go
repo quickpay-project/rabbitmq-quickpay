@@ -12,6 +12,8 @@ import (
 )
 
 // Broker คือส่วนที่คุยกับ RabbitMQ แยกเป็น interface เพื่อให้ทดสอบ lifecycle ได้โดยไม่ต้องมี broker
+//
+// After Cancel, the Broker MUST close the delivery channel, otherwise Run never returns.
 type Broker interface {
 	DeclareQueue(name string) error
 	Consume(queue string, prefetch int) (<-chan amqp.Delivery, string, error)
@@ -32,10 +34,12 @@ type Flow struct {
 	opts Options
 	spec atomic.Pointer[model.GroupSpec]
 
-	mu       sync.Mutex
-	tag      string
-	done     chan struct{}
-	draining bool
+	mu        sync.Mutex
+	started   bool // set to true before DeclareQueue to guard re-use
+	cancelled bool // set to true before first Cancel to de-duplicate calls
+	tag       string
+	done      chan struct{}
+	draining  bool
 }
 
 func New(o Options) *Flow {
@@ -59,15 +63,16 @@ func (f *Flow) UpdateSpec(s model.GroupSpec) { f.spec.Store(&s) }
 // conswithdraw.go:288 ทำให้ตอน AMQP หลุด worker ออกหมดแต่ goroutine ค้างถาวร
 // supervisor จึงไม่เคยรู้ว่ามันตายและ readiness ยังรายงานว่าปกติ
 //
-// ctx is passed through to Process but Run ignores ctx.Done() — shutdown is Drain-driven.
+// ctx is passed through to Process and also used to cancel the consumer (via watchdog).
 // Run is single-use per Flow: calling it twice returns an error on the second call.
 func (f *Flow) Run(ctx context.Context) error {
-	// Guard against re-use: if tag is already set, this Flow was already run
+	// Guard against re-use: mark started under lock before any broker call
 	f.mu.Lock()
-	if f.tag != "" {
+	if f.started {
 		f.mu.Unlock()
 		return errors.New("Flow.Run called more than once — flows are single-use, create a new Flow")
 	}
+	f.started = true
 	f.mu.Unlock()
 
 	defer func() {
@@ -100,8 +105,12 @@ func (f *Flow) Run(ctx context.Context) error {
 	f.mu.Lock()
 	f.tag = tag
 	draining := f.draining
+	shouldCancel := !f.cancelled && draining
+	if shouldCancel {
+		f.cancelled = true
+	}
 	f.mu.Unlock()
-	if draining {
+	if shouldCancel && tag != "" {
 		_ = f.opts.Broker.Cancel(tag)
 	}
 
@@ -111,7 +120,15 @@ func (f *Flow) Run(ctx context.Context) error {
 	go func() {
 		select {
 		case <-ctx.Done():
-			_ = f.opts.Broker.Cancel(tag)
+			f.mu.Lock()
+			shouldCancel := !f.cancelled && tag != ""
+			if shouldCancel {
+				f.cancelled = true
+			}
+			f.mu.Unlock()
+			if shouldCancel {
+				_ = f.opts.Broker.Cancel(tag)
+			}
 		case <-done:
 		}
 	}()
@@ -135,9 +152,13 @@ func (f *Flow) Drain(timeout time.Duration) error {
 	f.mu.Lock()
 	tag := f.tag
 	f.draining = true
+	shouldCancel := !f.cancelled && tag != ""
+	if shouldCancel {
+		f.cancelled = true
+	}
 	f.mu.Unlock()
 
-	if tag != "" {
+	if shouldCancel {
 		if err := f.opts.Broker.Cancel(tag); err != nil {
 			f.opts.Logf("⚠️  cancel consumer %s ไม่สำเร็จ: %v", tag, err)
 		}

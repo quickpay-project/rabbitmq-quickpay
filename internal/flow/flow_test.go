@@ -19,12 +19,13 @@ func (f *fakeAck) Nack(tag uint64, multiple, requeue bool) error { return nil }
 func (f *fakeAck) Reject(tag uint64, requeue bool) error         { return nil }
 
 type fakeBroker struct {
-	mu        sync.Mutex
-	msgs      chan amqp.Delivery
-	declared  []string
-	prefetch  int
-	cancelled bool
-	failDecl  error
+	mu                sync.Mutex
+	msgs              chan amqp.Delivery
+	declared          []string
+	prefetch          int
+	cancelled         bool
+	failDecl          error
+	consumeBlockUntil func() bool // optional: block Consume until this returns true
 }
 
 func newFakeBroker(buf int) *fakeBroker {
@@ -44,7 +45,16 @@ func (b *fakeBroker) DeclareQueue(name string) error {
 func (b *fakeBroker) Consume(queue string, prefetch int) (<-chan amqp.Delivery, string, error) {
 	b.mu.Lock()
 	b.prefetch = prefetch
+	blockFn := b.consumeBlockUntil
 	b.mu.Unlock()
+
+	// Block until condition is met if set (for deterministic testing)
+	if blockFn != nil {
+		for !blockFn() {
+			time.Sleep(1 * time.Millisecond)
+		}
+	}
+
 	return b.msgs, "tag-1", nil
 }
 
@@ -222,37 +232,28 @@ func TestDrainTimesOutWhenWorkerStuck(t *testing.T) {
 }
 
 // TestDrainRacesRunStartup tests that Drain cancels the consumer even if it wins the race with Run's tag assignment.
-// This reproduces the race: Drain calls Drain immediately without sleeping, so it may see tag == "" and must still cancel.
+// Deterministic: fakeBroker.Consume blocks until Drain has set the draining flag, forcing Drain to run before tag assignment.
 func TestDrainRacesRunStartup(t *testing.T) {
 	b := newFakeBroker(0)
-	consumeBlocked := make(chan struct{})
-	ack := &fakeAck{}
-
-	// fakeBroker.Consume returns immediately, but we inject a delay by making the first worker block
-	// until after Drain has been called.
-	var firstWorkerStarted atomic.Bool
 	f := New(Options{Spec: testSpec(1), Queue: "q", Broker: b,
-		Process: func(context.Context, amqp.Delivery, model.GroupSpec) {
-			if firstWorkerStarted.CompareAndSwap(false, true) {
-				<-consumeBlocked // block the worker until Drain is called
-			}
-			_ = ack.Ack(0, false)
-		}})
+		Process: func(context.Context, amqp.Delivery, model.GroupSpec) {}})
+
+	// Block Consume until Drain is called (when f.Draining() returns true).
+	// This forces the race ordering: Drain sees tag == "" before Run assigns it.
+	b.consumeBlockUntil = func() bool { return f.Draining() }
 
 	// Start Run in a goroutine
 	done := make(chan error, 1)
 	go func() { done <- f.Run(context.Background()) }()
 
-	// Give Run time to call DeclareQueue and Consume but NOT tag assignment
-	// (This is inherently racy but the Drain code must handle both orderings)
-	// Instead, we just call Drain immediately without sleep
+	// Give Run time to reach Consume (which will now block)
+	time.Sleep(20 * time.Millisecond)
 
-	// Drain without waiting: must call Cancel even if Run hasn't assigned tag yet
+	// Drain: must call Cancel even though Run is still blocked in Consume
+	// Verify Cancel was called
 	if err := f.Drain(1 * time.Second); err != nil {
 		t.Fatalf("Drain: %v", err)
 	}
-
-	// Verify Cancel was called
 	b.mu.Lock()
 	cancelled := b.cancelled
 	b.mu.Unlock()
@@ -260,7 +261,8 @@ func TestDrainRacesRunStartup(t *testing.T) {
 		t.Fatal("Drain must call Cancel even if it races Run's tag assignment — consumer was orphaned")
 	}
 
-	close(consumeBlocked)
+	// Let Run proceed now that Drain is done
+	_ = b.Cancel("tag-1")
 	<-done
 }
 
@@ -284,5 +286,30 @@ func TestRunRejectsSecondCall(t *testing.T) {
 	err = f.Run(context.Background())
 	if err == nil {
 		t.Fatal("second Run must return an error — Flow is single-use")
+	}
+}
+
+// TestRunRejectsSecondCallAfterStartupFailure verifies single-use guard works on failure path.
+// Regression test for: Run #1 fails at DeclareQueue, Run #2 should fail immediately, not run.
+func TestRunRejectsSecondCallAfterStartupFailure(t *testing.T) {
+	b := newFakeBroker(0)
+	b.failDecl = errors.New("406 PRECONDITION_FAILED")
+
+	f := New(Options{Spec: testSpec(1), Queue: "q", Broker: b,
+		Process: func(context.Context, amqp.Delivery, model.GroupSpec) {}})
+
+	// First Run should fail at DeclareQueue
+	err := f.Run(context.Background())
+	if err == nil {
+		t.Fatal("first Run should fail at declare")
+	}
+
+	// f.done is now closed (in defer) but started is true, so second Run should reject
+	b.failDecl = nil // clear the failure for second call
+
+	// Second Run should fail immediately due to started flag, before even trying to declare
+	err = f.Run(context.Background())
+	if err == nil {
+		t.Fatal("second Run must reject even after startup failure — Flow is single-use")
 	}
 }
