@@ -1,6 +1,7 @@
 package forward
 
 import (
+	"compress/gzip"
 	"context"
 	"net/http"
 	"net/http/httptest"
@@ -308,5 +309,41 @@ func TestAttemptRecordsURLIDAndDuration(t *testing.T) {
 	}
 	if a.Duration <= 0 {
 		t.Error("Duration ต้องถูกบันทึก")
+	}
+}
+
+// upstream ที่บีบอัด response — จำลองพฤติกรรมจริงของ api.goquickpay.com หลัง proxy
+// ถ้าเราส่ง Accept-Encoding ของ caller ต่อขึ้นไป net/http จะปิด auto-decompress
+// แล้วคืน gzip ดิบมา ซึ่งเราจะส่งต่อให้ caller โดยไม่มี Content-Encoding ติดไปด้วย
+// พบตอน deploy จริงครั้งแรก: caller ได้ byte ที่แกะไม่ออกทั้งที่ประกาศเป็น application/json
+func TestCallerAcceptEncodingIsNotForwardedSoBodyArrivesDecompressed(t *testing.T) {
+	const want = `{"code":0,"message":"ok"}`
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Encoding", "gzip")
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(200)
+		gz := gzip.NewWriter(w)
+		_, _ = gz.Write([]byte(want))
+		_ = gz.Close()
+	}))
+	defer srv.Close()
+
+	// Traefik เติม Accept-Encoding ให้ทุก request ที่ผ่านเข้ามา
+	hdr := http.Header{}
+	hdr.Set("Accept-Encoding", "gzip")
+
+	res := newTestForwarder().Send(context.Background(),
+		specWith(srv.URL), []byte(`{}`), hdr, farDeadline())
+
+	if res.Final == nil {
+		t.Fatal("ต้องมี attempt")
+	}
+	if len(res.Final.Body) >= 2 && res.Final.Body[0] == 0x1f && res.Final.Body[1] == 0x8b {
+		t.Fatal("body เป็น gzip ดิบ — Accept-Encoding ของ caller ถูกส่งต่อขึ้น upstream " +
+			"ทำให้ net/http ไม่แกะให้ caller จะได้ byte ที่อ่านไม่ออก")
+	}
+	if string(res.Final.Body) != want {
+		t.Fatalf("body = %q, want %q", res.Final.Body, want)
 	}
 }

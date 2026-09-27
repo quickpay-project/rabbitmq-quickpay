@@ -65,6 +65,15 @@ var hopByHop = map[string]bool{
 	"Upgrade":             true,
 	"Host":                true,
 	"Content-Length":      true,
+
+	// Accept-Encoding เป็นการต่อรองระหว่าง hop ไม่ใช่ end-to-end จึงห้ามส่งต่อ
+	// และถ้าส่งต่อจะพังจริง: net/http จะเติม Accept-Encoding: gzip ให้เองแล้วแกะ
+	// response ให้อัตโนมัติ **ก็ต่อเมื่อเราไม่ได้ตั้ง header นี้มาเอง** พอเราตั้งมา
+	// (Traefik ของ Easypanel เติมให้ caller ทุก request) มันจะถือว่าเราจะแกะเอง
+	// แล้วคืน gzip ดิบมา ซึ่งเราส่งต่อให้ caller โดยไม่มี Content-Encoding ติดไปด้วย
+	// caller จึงได้ byte ที่แกะไม่ออกทั้งที่ประกาศว่าเป็น application/json
+	// พบตอน deploy จริงครั้งแรก — httptest ไม่บีบอัดจึงไม่มี test ไหนจับได้
+	"Accept-Encoding": true,
 }
 
 // Send ยิง upstream ทีละ url จนกว่าจะสำเร็จ เจอ fatal หรือหมดเวลา
