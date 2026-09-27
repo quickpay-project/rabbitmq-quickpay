@@ -81,8 +81,15 @@ func (m *Manager) Channel(ctx context.Context) (*amqp.Channel, error) {
 // amq.rabbitmq.reply-to ของช่องนั้น ทดสอบได้โดยไม่ต้องมี broker จริงเพราะ pool คุยกับ
 // amqpChannel interface (rpc.go) อยู่แล้ว และ newRPCPool รับ open func() (amqpChannel, error)
 // ซึ่ง fake ได้ตรง ๆ — รอบนี้ทำแค่ให้ readiness บอกความจริง
+// ใช้ TryLock ไม่ใช่ Lock: connection() ถือ m.mu ค้างตลอด retry loop ตอน broker ล่ม
+// ซึ่งเป็นช่วงเวลาที่ /readyz ต้องตอบให้ได้มากที่สุด ถ้าใช้ Lock ที่นี่ readiness จะค้าง
+// แทนที่จะตอบ 503 + amqp:"down" ทำให้ field วินิจฉัยที่เป็นเหตุผลของ Healthy ไม่เคยแสดง
+// และ goroutine ของ HTTP handler ค้างสะสมทุก probe interval
+// การที่ล็อกไม่ได้แปลว่ามี redial ค้างอยู่ ซึ่งตามนิยามคือยังไม่ healthy อยู่แล้ว
 func (m *Manager) Healthy() bool {
-	m.mu.Lock()
+	if !m.mu.TryLock() {
+		return false
+	}
 	defer m.mu.Unlock()
 	return m.conn != nil && !m.conn.IsClosed()
 }
