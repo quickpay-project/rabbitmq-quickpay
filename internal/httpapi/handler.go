@@ -1,0 +1,200 @@
+package httpapi
+
+import (
+	"context"
+	"encoding/json"
+	"io"
+	"net/http"
+	"strconv"
+	"strings"
+	"time"
+
+	"github.com/celalsahinaltinisik/internal/amqpx"
+	"github.com/celalsahinaltinisik/internal/config"
+	"github.com/celalsahinaltinisik/internal/flow"
+	"github.com/celalsahinaltinisik/internal/model"
+	"github.com/celalsahinaltinisik/internal/store"
+	amqp "github.com/rabbitmq/amqp091-go"
+)
+
+const maxRequestBytes = 4 * 1024 * 1024
+
+type RequestLogger interface {
+	BeginRequest(ctx context.Context, in store.BeginRequestInput) error
+	MarkClientOutcome(ctx context.Context, traceID string, httpStatus int) error
+}
+
+type RPCCaller interface {
+	Call(ctx context.Context, queue string, pub amqp.Publishing) (*amqp.Delivery, error)
+}
+
+type Options struct {
+	Registry *flow.Registry
+	Logger   RequestLogger
+	Caller   RPCCaller
+	Cfg      *config.Config
+	NewID    func() string
+	Now      func() time.Time
+	Logf     func(string, ...any)
+}
+
+type Handler struct{ o Options }
+
+func New(o Options) *Handler {
+	if o.Now == nil {
+		o.Now = time.Now
+	}
+	if o.Logf == nil {
+		o.Logf = func(string, ...any) {}
+	}
+	return &Handler{o: o}
+}
+
+func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	switch r.URL.Path {
+	case "/healthz":
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("ok"))
+		return
+	case "/readyz":
+		h.readyz(w)
+		return
+	}
+
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	ip := ClientIP(r, h.o.Cfg.TrustedProxyCount)
+	if !IsAllowed(ip, h.o.Cfg.AllowedIPs, h.o.Cfg.AllowAllIPs) {
+		h.o.Logf("🚫 ปฏิเสธ IP %s ที่ %s", ip, r.URL.Path)
+		http.Error(w, "forbidden", http.StatusForbidden)
+		return
+	}
+
+	name := strings.Trim(r.URL.Path, "/")
+	if name == "" || strings.Contains(name, "/") {
+		http.NotFound(w, r)
+		return
+	}
+
+	f, state, ok := h.o.Registry.ByName(name)
+	if !ok {
+		http.NotFound(w, r)
+		return
+	}
+	spec := f.Spec()
+
+	if state != flow.StateRunning || !spec.HasUpstream() {
+		w.Header().Set("Retry-After", "5")
+		http.Error(w, "flow ยังไม่พร้อมรับงาน: "+string(state), http.StatusServiceUnavailable)
+		return
+	}
+
+	body, err := io.ReadAll(io.LimitReader(r.Body, maxRequestBytes))
+	if err != nil {
+		http.Error(w, "อ่าน body ไม่สำเร็จ", http.StatusBadRequest)
+		return
+	}
+
+	traceID := h.o.NewID()
+	w.Header().Set("X-Trace-Id", traceID)
+
+	start := h.o.Now()
+	deadline := start.Add(spec.RPCTimeout)
+
+	beginErr := h.o.Logger.BeginRequest(r.Context(), store.BeginRequestInput{
+		TraceID: traceID, GroupID: spec.ID, GroupName: spec.Name,
+		CallerTraceID: r.Header.Get("X-Trace-Id"),
+		ClientIP:      ip,
+		Body:          body,
+		BusinessRef:   model.ExtractRef(body, spec.RefField),
+	})
+	if beginErr != nil {
+		// ถ้าบันทึกไม่ได้ก็ไม่ควรทำงานต่อ เพราะจะกลายเป็นออเดอร์ที่ไม่มีร่องรอย
+		h.o.Logf("❌ BeginRequest ล้มเหลว trace=%s: %v", traceID, beginErr)
+		http.Error(w, "ระบบบันทึกไม่พร้อม", http.StatusServiceUnavailable)
+		return
+	}
+
+	ctx, cancel := context.WithDeadline(r.Context(), deadline)
+	defer cancel()
+
+	headers := amqp.Table{
+		flow.HeaderTraceID:  traceID,
+		flow.HeaderDeadline: strconv.FormatInt(deadline.UnixMilli(), 10),
+	}
+	for k, vs := range r.Header {
+		if len(vs) > 0 && !hopByHopRequest[http.CanonicalHeaderKey(k)] {
+			headers[k] = vs[0]
+		}
+	}
+
+	reply, err := h.o.Caller.Call(ctx, spec.QueueName(h.o.Cfg.QueuePrefix), amqp.Publishing{
+		ContentType:   "application/json",
+		CorrelationId: traceID,
+		Headers:       headers,
+		Body:          body,
+	})
+	if err != nil {
+		h.o.Logf("⏱  ไม่ได้รับ reply trace=%s: %v", traceID, err)
+		h.mark(r.Context(), traceID, http.StatusGatewayTimeout)
+		http.Error(w, "upstream ไม่ตอบกลับในเวลาที่กำหนด", http.StatusGatewayTimeout)
+		return
+	}
+
+	status := upstreamStatus(reply)
+	h.mark(r.Context(), traceID, status)
+
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(status)
+	_, _ = w.Write(reply.Body)
+}
+
+func (h *Handler) mark(ctx context.Context, traceID string, status int) {
+	if err := h.o.Logger.MarkClientOutcome(ctx, traceID, status); err != nil {
+		h.o.Logf("⚠️  บันทึกผลฝั่ง caller ไม่สำเร็จ trace=%s: %v", traceID, err)
+	}
+}
+
+func (h *Handler) readyz(w http.ResponseWriter) {
+	ready, states := h.o.Registry.AllRunning()
+	out := map[string]string{}
+	for name, st := range states {
+		out[name] = string(st)
+	}
+	w.Header().Set("Content-Type", "application/json")
+	if !ready {
+		w.WriteHeader(http.StatusServiceUnavailable)
+	}
+	_ = json.NewEncoder(w).Encode(map[string]any{"ready": ready, "flows": out})
+}
+
+func upstreamStatus(d *amqp.Delivery) int {
+	if d == nil || d.Headers == nil {
+		return http.StatusOK
+	}
+	switch v := d.Headers[amqpx.HeaderUpstreamStatus].(type) {
+	case int32:
+		return int(v)
+	case int64:
+		return int(v)
+	case int:
+		return v
+	case string:
+		if n, err := strconv.Atoi(v); err == nil {
+			return n
+		}
+	}
+	return http.StatusOK
+}
+
+var hopByHopRequest = map[string]bool{
+	"Connection":        true,
+	"Keep-Alive":        true,
+	"Transfer-Encoding": true,
+	"Upgrade":           true,
+	"Host":              true,
+	"Content-Length":    true,
+}

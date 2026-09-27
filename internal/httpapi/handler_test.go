@@ -1,0 +1,259 @@
+package httpapi
+
+import (
+	"context"
+	"encoding/json"
+	"net/http"
+	"net/http/httptest"
+	"strings"
+	"testing"
+	"time"
+
+	"github.com/celalsahinaltinisik/internal/amqpx"
+	"github.com/celalsahinaltinisik/internal/config"
+	"github.com/celalsahinaltinisik/internal/flow"
+	"github.com/celalsahinaltinisik/internal/model"
+	"github.com/celalsahinaltinisik/internal/store"
+	amqp "github.com/rabbitmq/amqp091-go"
+)
+
+type fakeLogger struct {
+	begun    []store.BeginRequestInput
+	outcomes map[string]int
+}
+
+func newFakeLogger() *fakeLogger { return &fakeLogger{outcomes: map[string]int{}} }
+
+func (f *fakeLogger) BeginRequest(_ context.Context, in store.BeginRequestInput) error {
+	f.begun = append(f.begun, in)
+	return nil
+}
+
+func (f *fakeLogger) MarkClientOutcome(_ context.Context, traceID string, status int) error {
+	f.outcomes[traceID] = status
+	return nil
+}
+
+type fakeCaller struct {
+	reply *amqp.Delivery
+	err   error
+	queue string
+	pub   amqp.Publishing
+}
+
+func (f *fakeCaller) Call(_ context.Context, queue string, pub amqp.Publishing) (*amqp.Delivery, error) {
+	f.queue, f.pub = queue, pub
+	return f.reply, f.err
+}
+
+type stubBroker struct{ msgs chan amqp.Delivery }
+
+func (b *stubBroker) DeclareQueue(string) error { return nil }
+func (b *stubBroker) Consume(string, int) (<-chan amqp.Delivery, string, error) {
+	return b.msgs, "t", nil
+}
+func (b *stubBroker) Cancel(string) error { return nil }
+func (b *stubBroker) Close() error        { return nil }
+
+func registryWith(name string, st flow.State, urls ...string) *flow.Registry {
+	spec := model.GroupSpec{ID: "g1", Name: name, WorkerCount: 2,
+		RPCTimeout: 30 * time.Second, RefField: "customer_order_id"}
+	for i, u := range urls {
+		spec.URLs = append(spec.URLs, model.URLSpec{ID: int64(i + 1), URL: u})
+	}
+	f := flow.New(flow.Options{Spec: spec, Queue: "v2." + name,
+		Broker:  &stubBroker{msgs: make(chan amqp.Delivery)},
+		Process: func(context.Context, amqp.Delivery, model.GroupSpec) {}})
+	r := flow.NewRegistry()
+	r.Put("g1", f, st)
+	return r
+}
+
+func testHandler(reg *flow.Registry, lg *fakeLogger, caller *fakeCaller) *Handler {
+	return New(Options{
+		Registry: reg,
+		Logger:   lg,
+		Caller:   caller,
+		Cfg: &config.Config{QueuePrefix: "v2.", AllowAllIPs: true,
+			TrustedProxyCount: 0},
+		NewID: func() string { return "trace-fixed" },
+	})
+}
+
+func post(h *Handler, path, body string) *httptest.ResponseRecorder {
+	r := httptest.NewRequest(http.MethodPost, path, strings.NewReader(body))
+	r.RemoteAddr = "203.0.113.9:1234"
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, r)
+	return w
+}
+
+func okReply(status int, body string) *amqp.Delivery {
+	return &amqp.Delivery{
+		Headers: amqp.Table{amqpx.HeaderUpstreamStatus: int32(status)},
+		Body:    []byte(body),
+	}
+}
+
+func TestPostForwardsAndReturnsTraceHeader(t *testing.T) {
+	lg, caller := newFakeLogger(), &fakeCaller{reply: okReply(200, `{"code":0}`)}
+	h := testHandler(registryWith("withdraw", flow.StateRunning, "https://a"), lg, caller)
+
+	w := post(h, "/withdraw", `{"customer_order_id":"ORDER-1"}`)
+
+	if w.Code != 200 {
+		t.Fatalf("status = %d, want 200", w.Code)
+	}
+	if w.Body.String() != `{"code":0}` {
+		t.Errorf("body = %q — ต้องเป็น passthrough", w.Body.String())
+	}
+	if w.Header().Get("X-Trace-Id") != "trace-fixed" {
+		t.Error("ต้องคืน X-Trace-Id ให้ support ไล่ปัญหาจากที่ลูกค้าแจ้งได้")
+	}
+	if caller.queue != "v2.withdraw" {
+		t.Errorf("queue = %q, want v2.withdraw — prefix ต้องถูกใส่", caller.queue)
+	}
+	if len(lg.begun) != 1 || lg.begun[0].BusinessRef != "ORDER-1" {
+		t.Errorf("BeginRequest = %+v — ต้องดึง business_ref จาก body", lg.begun)
+	}
+	if lg.outcomes["trace-fixed"] != 200 {
+		t.Errorf("MarkClientOutcome = %d, want 200", lg.outcomes["trace-fixed"])
+	}
+}
+
+func TestUpstreamStatusIsPassedThrough(t *testing.T) {
+	lg, caller := newFakeLogger(), &fakeCaller{reply: okReply(400, `{"message":"ยอดเงินไม่พอ"}`)}
+	h := testHandler(registryWith("withdraw", flow.StateRunning, "https://a"), lg, caller)
+
+	w := post(h, "/withdraw", `{}`)
+	if w.Code != 400 {
+		t.Fatalf("status = %d, want 400 ตาม spec §7.7", w.Code)
+	}
+	if lg.outcomes["trace-fixed"] != 400 {
+		t.Errorf("http_status ที่บันทึก = %d, want 400", lg.outcomes["trace-fixed"])
+	}
+}
+
+func TestPublishesTraceAndDeadlineHeaders(t *testing.T) {
+	lg, caller := newFakeLogger(), &fakeCaller{reply: okReply(200, `{}`)}
+	h := testHandler(registryWith("withdraw", flow.StateRunning, "https://a"), lg, caller)
+
+	post(h, "/withdraw", `{}`)
+
+	if caller.pub.Headers[flow.HeaderTraceID] != "trace-fixed" {
+		t.Error("ต้องส่ง x-trace-id ไปกับข้อความ")
+	}
+	if caller.pub.Headers[flow.HeaderDeadline] == nil {
+		t.Fatal("ต้องส่ง x-deadline ไปกับข้อความ ไม่งั้น worker จะยิง upstream หลัง caller เลิกรอ")
+	}
+	if caller.pub.CorrelationId == "" {
+		t.Error("ต้องมี correlation_id")
+	}
+}
+
+func TestRPCTimeoutReturns504AndRecordsIt(t *testing.T) {
+	lg := newFakeLogger()
+	caller := &fakeCaller{err: context.DeadlineExceeded}
+	h := testHandler(registryWith("withdraw", flow.StateRunning, "https://a"), lg, caller)
+
+	w := post(h, "/withdraw", `{}`)
+	if w.Code != 504 {
+		t.Fatalf("status = %d, want 504", w.Code)
+	}
+	if lg.outcomes["trace-fixed"] != 504 {
+		t.Errorf("ต้องบันทึกว่า caller ได้ 504 ไว้ให้ไล่เคส 'caller คิดว่าล้มแต่ออเดอร์เกิดจริง'")
+	}
+}
+
+func TestUnknownGroupIs404(t *testing.T) {
+	h := testHandler(registryWith("withdraw", flow.StateRunning, "https://a"),
+		newFakeLogger(), &fakeCaller{reply: okReply(200, `{}`)})
+	if w := post(h, "/ไม่มีกลุ่มนี้", `{}`); w.Code != 404 {
+		t.Fatalf("status = %d, want 404", w.Code)
+	}
+}
+
+func TestDrainingGroupIs503(t *testing.T) {
+	h := testHandler(registryWith("withdraw", flow.StateDraining, "https://a"),
+		newFakeLogger(), &fakeCaller{reply: okReply(200, `{}`)})
+	w := post(h, "/withdraw", `{}`)
+	if w.Code != 503 {
+		t.Fatalf("status = %d, want 503", w.Code)
+	}
+	if w.Header().Get("Retry-After") == "" {
+		t.Error("503 ควรมี Retry-After")
+	}
+}
+
+func TestGroupWithoutUpstreamIs503(t *testing.T) {
+	h := testHandler(registryWith("withdraw", flow.StateDegraded),
+		newFakeLogger(), &fakeCaller{reply: okReply(200, `{}`)})
+	if w := post(h, "/withdraw", `{}`); w.Code != 503 {
+		t.Fatalf("status = %d, want 503", w.Code)
+	}
+}
+
+func TestNonPostIs405(t *testing.T) {
+	h := testHandler(registryWith("withdraw", flow.StateRunning, "https://a"),
+		newFakeLogger(), &fakeCaller{reply: okReply(200, `{}`)})
+	r := httptest.NewRequest(http.MethodGet, "/withdraw", nil)
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, r)
+	if w.Code != 405 {
+		t.Fatalf("status = %d, want 405", w.Code)
+	}
+}
+
+func TestBlockedIPIs403AndNeverPublishes(t *testing.T) {
+	lg, caller := newFakeLogger(), &fakeCaller{reply: okReply(200, `{}`)}
+	h := New(Options{
+		Registry: registryWith("withdraw", flow.StateRunning, "https://a"),
+		Logger:   lg, Caller: caller,
+		Cfg:   &config.Config{QueuePrefix: "v2.", AllowedIPs: []string{"198.51.100.1"}},
+		NewID: func() string { return "trace-fixed" },
+	})
+
+	w := post(h, "/withdraw", `{}`)
+	if w.Code != 403 {
+		t.Fatalf("status = %d, want 403", w.Code)
+	}
+	if caller.queue != "" {
+		t.Error("IP ไม่ผ่านต้องไม่ publish อะไรเลย")
+	}
+	if len(lg.begun) != 0 {
+		t.Error("IP ไม่ผ่านต้องไม่สร้างแถวใน request_logs")
+	}
+}
+
+func TestHealthzAlwaysOK(t *testing.T) {
+	h := testHandler(registryWith("withdraw", flow.StateFailed, "https://a"),
+		newFakeLogger(), &fakeCaller{})
+	r := httptest.NewRequest(http.MethodGet, "/healthz", nil)
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, r)
+	if w.Code != 200 {
+		t.Fatalf("healthz = %d, want 200 — ต้องตอบได้แม้ flow ยังไม่ขึ้น", w.Code)
+	}
+}
+
+func TestReadyzReflectsFlowState(t *testing.T) {
+	h := testHandler(registryWith("withdraw", flow.StateFailed, "https://a"),
+		newFakeLogger(), &fakeCaller{})
+	r := httptest.NewRequest(http.MethodGet, "/readyz", nil)
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, r)
+
+	if w.Code != 503 {
+		t.Fatalf("readyz = %d, want 503 เมื่อมี flow ที่ failed", w.Code)
+	}
+	var body struct {
+		Ready bool              `json:"ready"`
+		Flows map[string]string `json:"flows"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &body); err != nil {
+		t.Fatalf("อ่าน body ไม่ได้: %v", err)
+	}
+	if body.Ready || body.Flows["withdraw"] != "failed" {
+		t.Errorf("body = %+v — ต้องบอกเป็นรายตัวว่าใครไม่ขึ้น", body)
+	}
+}
