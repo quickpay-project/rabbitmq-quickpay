@@ -1,11 +1,13 @@
 # ---- build ----
 FROM golang:1.23-alpine AS build
+# GOTOOLCHAIN=local ระดับ stage — ต้องมีผลกับ go mod download ด้วย ไม่ใช่แค่ go build
+# ไม่งั้น go จะดาวน์โหลด toolchain อื่นเงียบ ๆ ถ้า go.mod ขอเวอร์ชันที่ base image ไม่มี
+ENV GOTOOLCHAIN=local
 WORKDIR /src
 COPY go.mod go.sum ./
 RUN go mod download
 COPY . .
-RUN CGO_ENABLED=0 GOTOOLCHAIN=local \
-    go build -trimpath -ldflags="-s -w" -o /out/gateway ./cmd/gateway
+RUN CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o /out/gateway ./cmd/gateway
 
 # ---- runtime ----
 FROM alpine:3.20

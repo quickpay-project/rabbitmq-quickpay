@@ -132,14 +132,28 @@ func main() {
 
 	cancel() // หยุด reconcile loop
 
-	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), cfg.GracefulTimeout)
+	// GRACEFUL_TIMEOUT คืองบ "ก้อนเดียว" ของ shutdown ทั้งหมด ไม่ใช่ก้อนละขั้น
+	// เดิมให้ srv.Shutdown เต็มงบแล้วให้ drainAll เต็มงบอีกรอบ เวลาปิดแย่สุดจึงเป็นสองเท่า
+	// (default 45s → 90s) ซึ่งเกิน stop timeout ที่ตั้งไว้ แล้วโดน SIGKILL กลาง drain
+	// คือ pain point เดิมของระบบเก่าเป๊ะ ๆ ที่ service นี้มีไว้แก้
+	shutdownDeadline := time.Now().Add(cfg.GracefulTimeout)
+
+	shutdownCtx, shutdownCancel := context.WithDeadline(context.Background(), shutdownDeadline)
 	defer shutdownCancel()
 	if err := srv.Shutdown(shutdownCtx); err != nil {
 		log.Printf("⚠️  ปิด HTTP server: %v", err)
 	}
 
 	// drain ทุก flow ขนานกัน — Cancel ก่อนเสมอเพื่อไม่ให้ดูดงานใหม่เข้ามา
-	drainAll(registry, cfg.GracefulTimeout)
+	// ได้เวลาเท่าที่เหลือจากงบเดียวกัน งบรวมจึงไม่เกิน GRACEFUL_TIMEOUT
+	drainBudget := time.Until(shutdownDeadline)
+	if drainBudget <= 0 {
+		drainBudget = 0
+		log.Printf("⚠️  ปิด HTTP server ใช้งบ GRACEFUL_TIMEOUT %v หมดแล้ว — drain ได้เวลา 0 "+
+			"(ยังสั่ง Cancel consumer แต่ไม่รอของในมือ) ควรเพิ่ม GRACEFUL_TIMEOUT",
+			cfg.GracefulTimeout)
+	}
+	drainAll(registry, drainBudget)
 	log.Printf("👋 ปิดเรียบร้อย")
 }
 

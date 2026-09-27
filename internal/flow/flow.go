@@ -85,6 +85,22 @@ func (f *Flow) Run(ctx context.Context) error {
 		f.mu.Unlock()
 	}()
 
+	// Flow เป็นเจ้าของ Broker ตัวนี้ผู้เดียว (factory สร้าง channel ใหม่ให้ทุก flow)
+	// จึงต้องคืนมันตอนจบ ไม่งั้นทุกการ restart/stop จะทิ้ง AMQP channel ค้างบน
+	// connection ที่ใช้ร่วมกันจนชน channel_max (default 2047) แล้วเปิด flow ใหม่ไม่ได้อีก
+	// ซึ่งเกิดง่ายมากในระบบนี้เพราะ config เปลี่ยนได้ตลอดผ่าน DB
+	//
+	// ปิดที่นี่เพราะ Run เป็นจุดเดียวที่ครบทั้งสามเงื่อนไข:
+	//   1. ครอบทุกทางออก รวมทาง DeclareQueue/Consume ล้มตั้งแต่เริ่ม (ทางที่รั่วเร็วที่สุด
+	//      เพราะ reconciler จะ mark failed แล้วสร้างใหม่ทุกรอบ)
+	//   2. รับประกันว่า worker ทุกตัวจบแล้ว — defer นี้ทำงานหลัง wg.Wait() เสมอ
+	//      ต่างจากการปิดใน reconcile.stop ที่ Drain อาจ timeout ขณะ worker ยังถือข้อความอยู่
+	//   3. ปิดได้ครั้งเดียวแน่นอน เพราะ single-use guard ด้านบนทำให้มาถึงบรรทัดนี้ได้ครั้งเดียว
+	//
+	// ลงทะเบียนหลัง defer ที่ปิด f.done เพื่อให้ลำดับ LIFO ปิด broker "ก่อน" ส่งสัญญาณ done
+	// แปลว่าเมื่อ Drain คืนค่าสำเร็จ channel ถูกคืนเรียบร้อยแล้ว
+	defer func() { _ = f.opts.Broker.Close() }()
+
 	if err := f.opts.Broker.DeclareQueue(f.opts.Queue); err != nil {
 		return err
 	}

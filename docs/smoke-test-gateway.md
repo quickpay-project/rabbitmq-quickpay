@@ -43,7 +43,7 @@
 | `PORT` | `4000` | |
 | `MIGRATE_ON_START` | `true` | `false`/`0`/`no` = ปิด — ดูข้อ 2 ข้างบน |
 | `RECONCILE_INTERVAL` | `30s` | รอบที่ไปอ่าน `message_group` ใหม่ |
-| `GRACEFUL_TIMEOUT` | `45s` | เวลาให้ drain ตอน shutdown |
+| `GRACEFUL_TIMEOUT` | `45s` | **งบรวมของ shutdown ทั้งก้อน** — ปิด HTTP server และ drain flow ใช้เวลาก้อนเดียวกันนี้ร่วมกัน เวลาปิดทั้งหมดจึงไม่เกินค่านี้ |
 | `RPC_CHANNEL_POOL` | `4` | จำนวน channel สำหรับ RPC |
 | `TRUSTED_PROXY_COUNT` | `1` | จำนวน proxy ที่ไว้ใจ นับ client IP ถอยจากขวาของ `X-Forwarded-For + RemoteAddr` |
 
@@ -228,6 +228,11 @@ psql "$DATABASE_URL" -c "DELETE FROM message_group WHERE group_name = 'smoke';"
 1. deploy เป็น **Easypanel service ใหม่** โดย `QUEUE_PREFIX` ต้องไม่ว่าง และ
    `message_group_url.url` ชี้ **sandbox** ก่อน ไม่ใช่ปลายทางจริง
 2. ตั้ง health check ของ Easypanel เป็น `/readyz`
-3. ตั้ง **stop timeout ≥ 60s** ให้มากกว่า `GRACEFUL_TIMEOUT` (default 45s)
-   ไม่งั้นจะโดน SIGKILL กลาง drain แบบที่ระบบเก่าโดนทุกครั้ง (10s < 30s)
+3. ตั้ง **stop timeout ของ Easypanel ให้มากกว่า `GRACEFUL_TIMEOUT` พอสมควร**
+   ที่ค่า default 45s ให้ตั้ง **≥ 60s** (เหลือ headroom ~15s)
+   เวลาปิดทั้งหมดถูกจำกัดด้วย `GRACEFUL_TIMEOUT` ก้อนเดียว: `srv.Shutdown` ใช้ไปเท่าไหร่
+   `drainAll` ได้เวลาที่เหลือ ไม่ใช่ได้งบใหม่เต็มก้อน ดังนั้น worst case = `GRACEFUL_TIMEOUT`
+   ไม่ใช่สองเท่า
+   ถ้าตั้ง stop timeout น้อยกว่างบนี้ จะโดน SIGKILL กลาง drain แบบที่ระบบเก่าโดนทุกครั้ง
+   (ของเก่าต้องใช้ 30s แต่ docker ให้ 10s) — ข้อความที่ยังไม่ ack จะถูก requeue ทั้งหมด
 4. ยังไม่เปลี่ยน route ของ caller จริงจนกว่าจะยืนยันเรื่อง HTTP status passthrough ในขั้นที่ 4
