@@ -1,0 +1,9 @@
+.git
+.env
+.DS_Store
+CLAUDE.local.md
+docs
+*.md
+Dockerfile
+Dockerfile.gateway
+docker-compose.yaml

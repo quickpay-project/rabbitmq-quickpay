@@ -1,0 +1,5 @@
+.env
+.DS_Store
+
+# AgentSpace — local notes/credentials, never commit
+CLAUDE.local.md
