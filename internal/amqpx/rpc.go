@@ -16,8 +16,18 @@ const (
 	HeaderUpstreamStatus = "x-upstream-status"
 )
 
+// amqpChannel คือเฉพาะส่วนของ *amqp.Channel ที่ pool ใช้จริง
+// แยกเป็น interface เพื่อทดสอบ error path ตอน setup ได้โดยไม่ต้องมี broker
+type amqpChannel interface {
+	Consume(queue, consumer string, autoAck, exclusive, noLocal, noWait bool, args amqp.Table) (<-chan amqp.Delivery, error)
+	PublishWithContext(ctx context.Context, exchange, key string, mandatory, immediate bool, msg amqp.Publishing) error
+	Close() error
+}
+
+var _ amqpChannel = (*amqp.Channel)(nil)
+
 type rpcChannel struct {
-	ch *amqp.Channel
+	ch amqpChannel
 	w  *waiters
 }
 
@@ -29,17 +39,32 @@ type RPCPool struct {
 }
 
 func NewRPCPool(ctx context.Context, m *Manager, size int) (*RPCPool, error) {
+	return newRPCPool(size, func() (amqpChannel, error) {
+		ch, err := m.Channel(ctx)
+		if err != nil {
+			return nil, err
+		}
+		return ch, nil
+	})
+}
+
+// newRPCPool แยก logic ออกจากการเปิด channel จริง เพื่อให้เทสต์ error path ได้
+func newRPCPool(size int, open func() (amqpChannel, error)) (*RPCPool, error) {
 	if size < 1 {
 		return nil, errors.New("ขนาด pool ต้องอย่างน้อย 1")
 	}
 	p := &RPCPool{}
 	for i := 0; i < size; i++ {
-		ch, err := m.Channel(ctx)
+		ch, err := open()
 		if err != nil {
 			_ = p.Close()
 			return nil, err
 		}
+		// ลงทะเบียนเข้า pool ทันทีที่เปิด channel สำเร็จ ก่อนทำ setup ที่ยังล้มได้
+		// Close() จึงเป็นเจ้าของเดียวที่ปิด channel เสมอ ไม่ว่าจะออก error path ตรงไหน
+		// ถ้า append ทีหลัง channel ที่ Consume ล้มจะรั่วทิ้งไว้บน broker
 		rc := &rpcChannel{ch: ch, w: newWaiters()}
+		p.chans = append(p.chans, rc)
 
 		msgs, err := ch.Consume(directReplyTo, "", true, false, false, false, nil)
 		if err != nil {
@@ -52,8 +77,6 @@ func NewRPCPool(ctx context.Context, m *Manager, size int) (*RPCPool, error) {
 				rc.w.deliver(d.CorrelationId, d)
 			}
 		}(rc, msgs)
-
-		p.chans = append(p.chans, rc)
 	}
 	return p, nil
 }
