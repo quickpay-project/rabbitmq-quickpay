@@ -47,11 +47,11 @@ func TestValidateName(t *testing.T) {
 		{"deposit_v2", false},
 		{"a", false},
 		{"", true},
-		{"Withdraw", true},        // ตัวใหญ่ไม่ได้ เพราะชื่อ queue และ path ต้องคาดเดาได้
-		{"with draw", true},       // เว้นวรรคไม่ได้
-		{"-withdraw", true},       // ห้ามขึ้นต้นด้วย -
-		{"healthz", true},         // คำสงวน
-		{"readyz", true},          // คำสงวน
+		{"Withdraw", true},  // ตัวใหญ่ไม่ได้ เพราะชื่อ queue และ path ต้องคาดเดาได้
+		{"with draw", true}, // เว้นวรรคไม่ได้
+		{"-withdraw", true}, // ห้ามขึ้นต้นด้วย -
+		{"healthz", true},   // คำสงวน
+		{"readyz", true},    // คำสงวน
 		{"withdraw/../admin", true},
 	}
 	for _, c := range cases {
