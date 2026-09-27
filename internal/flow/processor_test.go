@@ -19,11 +19,13 @@ type fakeSender struct {
 	called atomic.Bool
 	result forward.Result
 	panics bool
+	gotHdr http.Header // header ที่ processor แปลงมาให้ — ใช้ตรวจว่าส่งต่อครบ
 }
 
 func (f *fakeSender) Send(_ context.Context, _ model.GroupSpec, _ []byte,
-	_ http.Header, _ time.Time) forward.Result {
+	hdr http.Header, _ time.Time) forward.Result {
 	f.called.Store(true)
+	f.gotHdr = hdr
 	if f.panics {
 		panic("upstream client ระเบิด")
 	}
@@ -257,5 +259,62 @@ func TestHandleWithoutReplyToSkipsPublishButStillFinishes(t *testing.T) {
 	}
 	if ack.acked.Load() != 1 {
 		t.Error("ต้อง ack")
+	}
+}
+
+// panicRecorder ทำให้ FinishRequest panic เพื่อจำลอง "panic ซ้อน" ที่เกิดขึ้น
+// ภายในตัวจัดการ recover เอง — กรณีที่ทำให้ ack หลุดถ้า ack อยู่ defer เดียวกัน
+type panicRecorder struct {
+	fakeRecorder
+	calls atomic.Int64
+}
+
+func (r *panicRecorder) FinishRequest(context.Context, store.FinishRequestInput) error {
+	r.calls.Add(1)
+	panic("recorder ระเบิดระหว่างบันทึกผลของ panic แรก")
+}
+
+// Fix review finding #1 — panic ซ้อนใน recovery handler ต้องไม่ทำให้ข้อความไม่ถูก ack
+// ถ้า ack อยู่ใน defer เดียวกับ recover ข้อความนี้จะกลายเป็น poison message ที่วนไม่รู้จบ
+func TestHandleAcksEvenWhenRecoveryHandlerPanics(t *testing.T) {
+	ack := &fakeAck{}
+	rec := &panicRecorder{}
+
+	NewProcessor(&fakeSender{panics: true}, rec,
+		func(context.Context, string, amqp.Publishing) error { return nil }).
+		Handle(context.Background(),
+			delivery(ack, "trace-1", time.Now().Add(time.Minute), "reply-q"), testSpec(1))
+
+	if rec.calls.Load() != 1 {
+		t.Fatalf("FinishRequest ถูกเรียก %d ครั้ง, want 1 — ต้องเข้า recovery handler จริง",
+			rec.calls.Load())
+	}
+	if ack.acked.Load() != 1 {
+		t.Fatalf("ack %d ครั้ง, want 1 — panic ซ้อนใน recovery handler ต้องไม่ทำให้ ack หลุด",
+			ack.acked.Load())
+	}
+}
+
+// Fix review finding #2 — header ของ caller ที่มาเป็น []byte ต้องไม่หายเงียบ ๆ
+func TestHandleForwardsByteSliceHeadersToUpstream(t *testing.T) {
+	ack := &fakeAck{}
+	snd := &fakeSender{result: okResult()}
+	rec := &fakeRecorder{}
+
+	d := delivery(ack, "trace-1", time.Now().Add(time.Minute), "reply-q")
+	d.Headers["x-merchant-id"] = []byte("M001") // long-string จาก broker มาเป็น []byte
+	d.Headers["authorization"] = "Bearer abc123"
+
+	NewProcessor(snd, rec, func(context.Context, string, amqp.Publishing) error { return nil }).
+		Handle(context.Background(), d, testSpec(1))
+
+	if got := snd.gotHdr.Get("X-Merchant-Id"); got != "M001" {
+		t.Errorf("header []byte = %q, want M001 — ต้องไม่ถูกทิ้งเงียบ ๆ", got)
+	}
+	if got := snd.gotHdr.Get("Authorization"); got != "Bearer abc123" {
+		t.Errorf("header string = %q, want Bearer abc123", got)
+	}
+	if snd.gotHdr.Get(HeaderTraceID) != "" || snd.gotHdr.Get(HeaderDeadline) != "" {
+		t.Error("header ภายในของเราเอง (x-trace-id, x-deadline) ต้องไม่ถูกส่งต่อไป upstream")
 	}
 }

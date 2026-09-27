@@ -53,13 +53,29 @@ func (p *Processor) Handle(ctx context.Context, d amqp.Delivery, spec model.Grou
 	start := p.Now()
 	traceID := headerString(d.Headers, HeaderTraceID)
 
+	// ack อยู่ใน defer ของตัวเองและลงทะเบียน "ก่อน" defer ที่ recover ด้านล่าง
+	// ลำดับ LIFO จึงทำให้ ack ทำงานทีหลังเสมอและไม่มีทางถูกข้าม
+	//
+	// ถ้ารวม ack ไว้ใน defer เดียวกับ recover แล้ว finish หรือ reply panic ซ้อน
+	// ระหว่างจัดการ panic แรก มันจะหลุดออกจาก deferred function ก่อนถึงบรรทัด ack
+	// ข้อความจะไม่ถูก ack กลายเป็น poison message ที่ requeue วนไม่รู้จบ
+	// ซึ่งขัดกับข้อกำหนดหลักว่าต้อง ack ทุกกรณีรวมทั้งตอน panic
+	defer func() {
+		// กัน panic ที่หลุดจาก recovery handler ไม่ให้ล้ม worker ทั้งตัว
+		// flow.Run ไม่มี recover ของตัวเอง panic ที่หลุดออกไปจะฆ่า process
+		// ทำให้ข้อความของ worker อื่นที่ยังไม่ ack ถูก requeue ยกชุด
+		if r := recover(); r != nil {
+			p.Logf("💥 panic ซ้อนระหว่างจัดการ panic trace=%s: %v", traceID, r)
+		}
+		_ = d.Ack(false)
+	}()
+
 	defer func() {
 		if r := recover(); r != nil {
 			p.Logf("💥 panic ระหว่างประมวลผล trace=%s: %v", traceID, r)
 			p.finish(ctx, traceID, model.StatusFailed, nil, 0, start, fmt.Sprintf("panic: %v", r))
 			p.reply(ctx, d, errorBody(500, "internal error"), 500)
 		}
-		_ = d.Ack(false)
 	}()
 
 	deadline, ok := parseDeadline(d.Headers)
@@ -169,13 +185,21 @@ func headerString(h amqp.Table, key string) string {
 	if h == nil {
 		return ""
 	}
-	switch v := h[key].(type) {
+	s, _ := headerValueString(h[key])
+	return s
+}
+
+// headerValueString แปลงค่าหนึ่งค่าใน amqp.Table เป็น string
+// รองรับทั้ง string และ []byte เพราะ client/broker บางตัวส่ง long-string มาเป็น []byte
+// เป็นตรรกะเดียวที่ใช้ร่วมกันทั้ง headerString และ amqpHeadersToHTTP จึงแตกกันไม่ได้
+func headerValueString(v any) (string, bool) {
+	switch s := v.(type) {
 	case string:
-		return v
+		return s, true
 	case []byte:
-		return string(v)
+		return string(s), true
 	default:
-		return ""
+		return "", false
 	}
 }
 
@@ -187,7 +211,7 @@ func amqpHeadersToHTTP(h amqp.Table) http.Header {
 		if k == HeaderTraceID || k == HeaderDeadline {
 			continue
 		}
-		if s, ok := v.(string); ok {
+		if s, ok := headerValueString(v); ok {
 			out.Add(k, s)
 		}
 	}
