@@ -92,9 +92,19 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	body, err := io.ReadAll(io.LimitReader(r.Body, maxRequestBytes))
+	// อ่านเกินลิมิตไป 1 ไบต์เพื่อ "ตรวจจับ" ว่าเกิน ไม่ใช่เพื่อใช้งาน
+	body, err := io.ReadAll(io.LimitReader(r.Body, maxRequestBytes+1))
 	if err != nil {
 		http.Error(w, "อ่าน body ไม่สำเร็จ", http.StatusBadRequest)
+		return
+	}
+	if len(body) > maxRequestBytes {
+		// ปฏิเสธ ไม่ตัดแล้วใช้ต่อ — payload ที่ถูกตัดคือ JSON พังที่จะถูกเขียนลง
+		// request_logs, ถูก ExtractRef ดึง business_ref ผิด และถูกยิง upstream
+		// ราวกับเป็นของสมบูรณ์ ซึ่งเป็นปัญหา data integrity ไม่ใช่เรื่องประสิทธิภาพ
+		// รูปแบบเดียวกับที่ internal/forward ทำกับ response body ที่ใหญ่เกิน
+		h.o.Logf("🚫 body ใหญ่เกิน %d ไบต์ ที่ %s จาก %s", maxRequestBytes, r.URL.Path, ip)
+		http.Error(w, "body ใหญ่เกินที่รับได้", http.StatusRequestEntityTooLarge)
 		return
 	}
 
@@ -175,19 +185,29 @@ func upstreamStatus(d *amqp.Delivery) int {
 	if d == nil || d.Headers == nil {
 		return http.StatusOK
 	}
+	var raw int
 	switch v := d.Headers[amqpx.HeaderUpstreamStatus].(type) {
 	case int32:
-		return int(v)
+		raw = int(v)
 	case int64:
-		return int(v)
+		raw = int(v)
 	case int:
-		return v
+		raw = v
 	case string:
-		if n, err := strconv.Atoi(v); err == nil {
-			return n
+		n, err := strconv.Atoi(v)
+		if err != nil {
+			return http.StatusOK
 		}
+		raw = n
+	default:
+		return http.StatusOK
 	}
-	return http.StatusOK
+	// ค่านอกช่วงที่ WriteHeader ยอมรับจะทำให้ net/http panic ทันที
+	// clamp เป็น 502 เพื่อไม่ต้องพึ่งสมมติฐานว่าฝั่งที่ publish reply ส่งค่าถูกเสมอ
+	if raw < 100 || raw > 999 {
+		return http.StatusBadGateway
+	}
+	return raw
 }
 
 var hopByHopRequest = map[string]bool{

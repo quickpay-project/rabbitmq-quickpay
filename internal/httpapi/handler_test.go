@@ -257,3 +257,65 @@ func TestReadyzReflectsFlowState(t *testing.T) {
 		t.Errorf("body = %+v — ต้องบอกเป็นรายตัวว่าใครไม่ขึ้น", body)
 	}
 }
+
+// Fix review finding #1 — body ที่ใหญ่เกินต้องถูกปฏิเสธ ไม่ใช่ถูกตัดแล้วบันทึก/ส่งต่อ
+// payload ที่ถูกตัดคือ JSON พังที่ถูกเขียนลง request_logs และถูกยิง upstream
+// ราวกับเป็นของสมบูรณ์ — เป็นปัญหา data integrity ของงานการเงิน
+func TestOversizedBodyIs413AndNeverPublishes(t *testing.T) {
+	lg, caller := newFakeLogger(), &fakeCaller{reply: okReply(200, `{}`)}
+	h := testHandler(registryWith("withdraw", flow.StateRunning, "https://a"), lg, caller)
+
+	// เกินลิมิตไป 1 ไบต์พอดี
+	pad := strings.Repeat("a", maxRequestBytes-9)
+	w := post(h, "/withdraw", `{"pad":"`+pad+`"}`)
+
+	if w.Code != http.StatusRequestEntityTooLarge {
+		t.Fatalf("status = %d, want 413", w.Code)
+	}
+	if caller.queue != "" {
+		t.Error("body เกินขนาดต้องไม่ publish อะไรเลย")
+	}
+	if len(lg.begun) != 0 {
+		t.Error("body เกินขนาดต้องไม่สร้างแถวใน request_logs")
+	}
+	if len(lg.outcomes) != 0 {
+		t.Error("body เกินขนาดต้องไม่บันทึกผลฝั่ง caller")
+	}
+}
+
+// ขอบเขตพอดีต้องผ่าน — กันการแก้แบบ off-by-one ที่ไปปฏิเสธของที่ยังรับได้
+func TestBodyExactlyAtLimitStillPasses(t *testing.T) {
+	lg, caller := newFakeLogger(), &fakeCaller{reply: okReply(200, `{"code":0}`)}
+	h := testHandler(registryWith("withdraw", flow.StateRunning, "https://a"), lg, caller)
+
+	pad := strings.Repeat("a", maxRequestBytes-10) // `{"pad":"` + pad + `"}` = maxRequestBytes พอดี
+	body := `{"pad":"` + pad + `"}`
+	if len(body) != maxRequestBytes {
+		t.Fatalf("เตรียม body ผิด: %d ไบต์, want %d", len(body), maxRequestBytes)
+	}
+
+	w := post(h, "/withdraw", body)
+	if w.Code != 200 {
+		t.Fatalf("status = %d, want 200 — ขนาดพอดีลิมิตต้องยังรับได้", w.Code)
+	}
+	if len(lg.begun) != 1 {
+		t.Error("ต้องบันทึก request_logs ตามปกติ")
+	}
+}
+
+// Fix review finding #2 — ค่า x-upstream-status นอกช่วง 100-999 ทำให้ WriteHeader panic
+func TestOutOfRangeUpstreamStatusBecomes502(t *testing.T) {
+	for _, bad := range []int{0, 99, 1000, -5} {
+		lg, caller := newFakeLogger(), &fakeCaller{reply: okReply(bad, `{"x":1}`)}
+		h := testHandler(registryWith("withdraw", flow.StateRunning, "https://a"), lg, caller)
+
+		w := post(h, "/withdraw", `{}`)
+		if w.Code != http.StatusBadGateway {
+			t.Errorf("x-upstream-status %d: status = %d, want 502", bad, w.Code)
+		}
+		if lg.outcomes["trace-fixed"] != http.StatusBadGateway {
+			t.Errorf("x-upstream-status %d: บันทึก = %d, want 502",
+				bad, lg.outcomes["trace-fixed"])
+		}
+	}
+}
