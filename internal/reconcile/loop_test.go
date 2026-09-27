@@ -29,7 +29,7 @@ func TestLoopWithoutLogfDoesNotPanic(t *testing.T) {
 		Registry: flow.NewRegistry(),
 		Factory:  noFlow,
 	}
-	if err := l.Once(context.Background()); err != nil {
+	if err := l.Once(context.Background(), context.Background()); err != nil {
 		t.Fatalf("Once: %v", err)
 	}
 }
@@ -43,7 +43,7 @@ func TestLoopRunWithZeroIntervalDoesNotPanic(t *testing.T) {
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		l.Run(ctx)
+		l.Run(ctx, context.Background())
 	}()
 	cancel()
 

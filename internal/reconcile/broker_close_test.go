@@ -21,6 +21,7 @@ type countingBroker struct {
 	cancelled bool
 
 	closed   atomic.Int64
+	cancels  atomic.Int64
 	consumed atomic.Bool
 }
 
@@ -32,6 +33,7 @@ func (b *countingBroker) Consume(string, int) (<-chan amqp.Delivery, string, err
 }
 
 func (b *countingBroker) Cancel(string) error {
+	b.cancels.Add(1)
 	b.mu.Lock()
 	if !b.cancelled {
 		b.cancelled = true
@@ -50,6 +52,7 @@ func (b *countingBroker) Close() error {
 type brokerFactory struct {
 	mu      sync.Mutex
 	created []*countingBroker
+	flows   []*flow.Flow
 }
 
 func (bf *brokerFactory) next() *countingBroker {
@@ -73,6 +76,23 @@ func (bf *brokerFactory) count() int {
 	bf.mu.Lock()
 	defer bf.mu.Unlock()
 	return len(bf.created)
+}
+
+func (bf *brokerFactory) record(f *flow.Flow) *flow.Flow {
+	bf.mu.Lock()
+	bf.flows = append(bf.flows, f)
+	bf.mu.Unlock()
+	return f
+}
+
+// flowAt คืน *flow.Flow ตัวที่ i ตามลำดับการสร้าง — ใช้เทียบ identity
+func (bf *brokerFactory) flowAt(i int) *flow.Flow {
+	bf.mu.Lock()
+	defer bf.mu.Unlock()
+	if i >= len(bf.flows) {
+		return nil
+	}
+	return bf.flows[i]
 }
 
 type listLoader struct {
@@ -100,9 +120,9 @@ func loopWithCountingBrokers(t *testing.T) (*Loop, *listLoader, *brokerFactory) 
 		Loader:   ld,
 		Registry: flow.NewRegistry(),
 		Factory: func(s model.GroupSpec) (*flow.Flow, error) {
-			return flow.New(flow.Options{Spec: s, Queue: "v2." + s.Name,
+			return bf.record(flow.New(flow.Options{Spec: s, Queue: "v2." + s.Name,
 				Broker:  bf.next(),
-				Process: func(context.Context, amqp.Delivery, model.GroupSpec) {}}), nil
+				Process: func(context.Context, amqp.Delivery, model.GroupSpec) {}})), nil
 		},
 		Drain: 2 * time.Second,
 	}
@@ -126,7 +146,7 @@ func TestStoppedFlowClosesItsBrokerExactlyOnce(t *testing.T) {
 	ctx := context.Background()
 
 	ld.set(spec("g1", "withdraw", 2, "https://a"))
-	if err := l.Once(ctx); err != nil {
+	if err := l.Once(ctx, ctx); err != nil {
 		t.Fatalf("Once (start): %v", err)
 	}
 	waitFor(t, "flow เริ่ม consume", func() bool {
@@ -138,7 +158,7 @@ func TestStoppedFlowClosesItsBrokerExactlyOnce(t *testing.T) {
 	}
 
 	ld.set() // DB ไม่มี group นี้แล้ว
-	if err := l.Once(ctx); err != nil {
+	if err := l.Once(ctx, ctx); err != nil {
 		t.Fatalf("Once (stop): %v", err)
 	}
 
@@ -157,7 +177,7 @@ func TestRestartClosesOldBrokerButNotNewOne(t *testing.T) {
 	ctx := context.Background()
 
 	ld.set(spec("g1", "withdraw", 2, "https://a"))
-	if err := l.Once(ctx); err != nil {
+	if err := l.Once(ctx, ctx); err != nil {
 		t.Fatalf("Once (start): %v", err)
 	}
 	waitFor(t, "flow แรกเริ่ม consume", func() bool {
@@ -166,7 +186,7 @@ func TestRestartClosesOldBrokerButNotNewOne(t *testing.T) {
 	})
 
 	ld.set(spec("g1", "withdraw", 5, "https://a")) // worker_count 2 → 5
-	if err := l.Once(ctx); err != nil {
+	if err := l.Once(ctx, ctx); err != nil {
 		t.Fatalf("Once (restart): %v", err)
 	}
 	waitFor(t, "flow ใหม่เริ่ม consume", func() bool {

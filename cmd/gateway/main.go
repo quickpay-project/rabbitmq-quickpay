@@ -30,8 +30,20 @@ func main() {
 		log.Fatalf("❌ %v", err)
 	}
 
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	// flowCtx คุมอายุของ flow และของ request ที่ worker ถืออยู่ในมือ
+	// **ห้ามผูกกับ SIGTERM เด็ดขาด** ถ้าผูก ตอน deploy ทุก worker ที่กำลังทำ payment
+	// จะถูกฆ่าพร้อมกัน: forward.attempt ได้ context.Canceled หลัง WroteRequest ไปแล้ว
+	// → Classify คืน fatal ซึ่งคือ "ออเดอร์สถานะไม่แน่นอน" ตาม spec §9.1 ที่เราผลิตขึ้นเอง,
+	// RecordAttempts/FinishRequest เขียนไม่ลง (แถวค้าง pending ตลอดกาล) และ reply ส่งไม่ออก
+	// การหยุดรับงานใหม่เป็นหน้าที่ของ Flow.Drain (Broker.Cancel) ไม่ใช่การ cancel ctx
+	// ยกเลิกทีหลังสุด หลัง drainAll คืนค่าแล้วเท่านั้น
+	flowCtx, flowCancel := context.WithCancel(context.Background())
+	defer flowCancel()
+
+	// loopCtx คุมงาน "ควบคุม" ที่หยุดได้ทันทีตอน shutdown: reconcile ticker,
+	// การอ่าน DB ตอน start/reconcile และการ dial ที่ยังค้างอยู่
+	loopCtx, loopCancel := context.WithCancel(context.Background())
+	defer loopCancel()
 
 	// 2-3. DB + migration
 	db, err := store.Open(cfg.DatabaseURL)
@@ -40,7 +52,7 @@ func main() {
 	}
 	defer db.Close()
 
-	pingCtx, pingCancel := context.WithTimeout(ctx, 10*time.Second)
+	pingCtx, pingCancel := context.WithTimeout(loopCtx, 10*time.Second)
 	if err := db.PingContext(pingCtx); err != nil {
 		pingCancel()
 		log.Fatalf("❌ ต่อ DB ไม่ได้: %v", err)
@@ -48,7 +60,7 @@ func main() {
 	pingCancel()
 
 	if cfg.MigrateOnStart {
-		if err := store.Migrate(ctx, db); err != nil {
+		if err := store.Migrate(loopCtx, db); err != nil {
 			log.Fatalf("❌ migration ล้มเหลว: %v", err)
 		}
 		log.Printf("✅ migration เรียบร้อย")
@@ -60,7 +72,7 @@ func main() {
 	mgr.Logf = log.Printf
 	defer mgr.Close()
 
-	pool, err := amqpx.NewRPCPool(ctx, mgr, cfg.RPCChannelPool)
+	pool, err := amqpx.NewRPCPool(loopCtx, mgr, cfg.RPCChannelPool)
 	if err != nil {
 		log.Fatalf("❌ สร้าง RPC pool ไม่ได้: %v", err)
 	}
@@ -72,7 +84,9 @@ func main() {
 	fwd := forward.New()
 
 	factory := func(spec model.GroupSpec) (*flow.Flow, error) {
-		broker, err := amqpx.NewBroker(ctx, mgr)
+		// ctx ตรงนี้ใช้แค่ตอน dial/เปิด channel ไม่ได้ถูกเก็บไว้ใช้ต่อ
+		// จึงใช้ loopCtx เพื่อให้การ dial ที่ค้างอยู่ยอมแพ้ตอน shutdown
+		broker, err := amqpx.NewBroker(loopCtx, mgr)
 		if err != nil {
 			return nil, err
 		}
@@ -102,6 +116,8 @@ func main() {
 	handler := httpapi.New(httpapi.Options{
 		Registry: registry, Logger: st, Caller: pool, Cfg: cfg,
 		NewID: uuid.NewString, Logf: log.Printf,
+		// readyz ต้องเห็นว่า AMQP ตายด้วย ไม่ใช่ดูแค่สถานะ flow
+		AMQPHealthy: mgr.Healthy,
 	})
 	srv := &http.Server{
 		Addr:              ":" + cfg.Port,
@@ -116,13 +132,13 @@ func main() {
 	}()
 
 	// 7. reconcile รอบแรกแบบ sync — flow ทุกตัวขึ้นตรงนี้ ไม่ต้อง curl อะไรทั้งนั้น
-	if err := loop.Once(ctx); err != nil {
+	if err := loop.Once(loopCtx, flowCtx); err != nil {
 		log.Printf("⚠️  reconcile รอบแรกล้มเหลว: %v (จะลองใหม่ในรอบถัดไป)", err)
 	}
-	warnIfTimeoutsExceedGrace(ctx, st, cfg.GracefulTimeout)
+	warnIfTimeoutsExceedGrace(loopCtx, st, cfg.GracefulTimeout)
 
 	// 8. reconcile loop
-	go loop.Run(ctx)
+	go loop.Run(loopCtx, flowCtx)
 
 	// graceful shutdown
 	stop := make(chan os.Signal, 1)
@@ -130,7 +146,7 @@ func main() {
 	sig := <-stop
 	log.Printf("🛑 ได้รับสัญญาณ %v — เริ่ม graceful shutdown", sig)
 
-	cancel() // หยุด reconcile loop
+	loopCancel() // หยุดแค่ reconcile loop — ไม่แตะ request ที่ค้างอยู่
 
 	// GRACEFUL_TIMEOUT คืองบ "ก้อนเดียว" ของ shutdown ทั้งหมด ไม่ใช่ก้อนละขั้น
 	// เดิมให้ srv.Shutdown เต็มงบแล้วให้ drainAll เต็มงบอีกรอบ เวลาปิดแย่สุดจึงเป็นสองเท่า
@@ -154,6 +170,10 @@ func main() {
 			cfg.GracefulTimeout)
 	}
 	drainAll(registry, drainBudget)
+
+	// ยกเลิก flowCtx ตรงนี้เท่านั้น — หลัง drain จบแล้ว ไม่มี worker ไหนถืองานอยู่อีก
+	// ถ้ายกเลิกก่อนหน้านี้ ดีไซน์ drain ทั้งหมดตาม spec §6.4/§6.7 จะกลายเป็น dead code
+	flowCancel()
 	log.Printf("👋 ปิดเรียบร้อย")
 }
 

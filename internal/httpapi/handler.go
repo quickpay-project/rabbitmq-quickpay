@@ -36,6 +36,12 @@ type Options struct {
 	NewID    func() string
 	Now      func() time.Time
 	Logf     func(string, ...any)
+
+	// AMQPHealthy บอกว่า connection ของ broker ยังใช้ได้ไหม (amqpx.Manager.Healthy)
+	// เป็น func เพื่อไม่ให้ httpapi ต้องรู้จัก amqpx และเพื่อให้ fake ได้ใน test
+	// สถานะ flow อย่างเดียวไม่พอ เพราะ consumer กู้ตัวเองได้แต่ RPC pool ไม่กู้
+	// readyz จึงเขียวได้ทั้งที่เส้นทาง request ตายสนิท
+	AMQPHealthy func() bool
 }
 
 type Handler struct{ o Options }
@@ -46,6 +52,10 @@ func New(o Options) *Handler {
 	}
 	if o.Logf == nil {
 		o.Logf = func(string, ...any) {}
+	}
+	if o.AMQPHealthy == nil {
+		// ไม่ได้ผูกไว้ = ไม่มีข้อมูล ไม่ตัดสินว่าพัง (cmd/gateway ผูก mgr.Healthy ให้จริง)
+		o.AMQPHealthy = func() bool { return true }
 	}
 	return &Handler{o: o}
 }
@@ -169,16 +179,28 @@ func (h *Handler) mark(ctx context.Context, traceID string, status int) {
 }
 
 func (h *Handler) readyz(w http.ResponseWriter) {
-	ready, states := h.o.Registry.AllRunning()
+	flowsReady, states := h.o.Registry.AllRunning()
 	out := map[string]string{}
 	for name, st := range states {
 		out[name] = string(st)
 	}
+
+	// สุขภาพ AMQP เป็นเงื่อนไขแยก: flow ทุกตัวอาจ running แต่ถ้า connection หลุด
+	// ทุก request จะได้ 504 ถาวร ต้องตอบ not-ready เพื่อให้ orchestrator restart pod
+	amqpUp := h.o.AMQPHealthy()
+	amqpStatus := "up"
+	if !amqpUp {
+		amqpStatus = "down"
+	}
+	ready := flowsReady && amqpUp
+
 	w.Header().Set("Content-Type", "application/json")
 	if !ready {
 		w.WriteHeader(http.StatusServiceUnavailable)
 	}
-	_ = json.NewEncoder(w).Encode(map[string]any{"ready": ready, "flows": out})
+	_ = json.NewEncoder(w).Encode(map[string]any{
+		"ready": ready, "flows": out, "amqp": amqpStatus,
+	})
 }
 
 func upstreamStatus(d *amqp.Delivery) int {

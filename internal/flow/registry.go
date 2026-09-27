@@ -46,6 +46,23 @@ func (r *Registry) SetState(id string, st State) {
 	r.mu.Unlock()
 }
 
+// SetStateIf เปลี่ยนสถานะเฉพาะเมื่อ f ยังเป็น flow ตัวปัจจุบันของ id นั้น คืน true เมื่อเปลี่ยนจริง
+//
+// จำเป็นเพราะตอน Restart มี flow สองตัวใช้ id เดียวกันในช่วงสั้น ๆ (stop ตัวเก่า แล้ว start ตัวใหม่)
+// goroutine ของตัวเก่าที่กำลังตายอยู่ต้องไม่ไป mark ตัวใหม่เป็น failed — SetState ธรรมดา
+// เช็คแค่ว่า id มีอยู่ ไม่เช็ค identity จึงเขียนทับสถานะของ flow ที่ไม่ใช่ตัวเองได้
+// ผลของการไม่เช็คคือ Restart ปลอมทุกรอบเวลา config เปลี่ยนบ่อย ซึ่งแต่ละครั้ง
+// คือการ drain consumer ที่แข็งแรงดีทิ้ง
+func (r *Registry) SetStateIf(id string, f *Flow, st State) bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if cur, ok := r.flows[id]; !ok || cur != f {
+		return false
+	}
+	r.state[id] = st
+	return true
+}
+
 func (r *Registry) Remove(id string) {
 	r.mu.Lock()
 	delete(r.flows, id)

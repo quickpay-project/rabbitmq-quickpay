@@ -65,6 +65,28 @@ func (m *Manager) Channel(ctx context.Context) (*amqp.Channel, error) {
 	return conn.Channel()
 }
 
+// Healthy บอกว่า connection ที่ใช้ร่วมกันยังใช้งานได้จริงหรือไม่ ใช้ตอบ /readyz
+//
+// จำเป็นเพราะ RPCPool เปิด channel ครั้งเดียวตอน start แล้วไม่เคยเปิดใหม่ (rpc.go)
+// ส่วน connection จะ redial ก็ต่อเมื่อมีคนเรียก Channel() ซึ่ง pool ไม่เคยเรียกอีก
+// เมื่อ broker restart หรือ TCP หลุด ทุก Call จะได้ ErrClosed **ถาวร** จนกว่าจะ restart
+// process ขณะที่ฝั่ง consumer กู้ตัวเองได้ (msgs ปิด → Run คืนค่า → reconcile Restart)
+// ทำให้ Registry.AllRunning ยังคืน true แล้ว /readyz กลับมาเขียวทั้งที่เส้นทาง request
+// ตายสนิท — เป็นบาปเดียวกับที่ spec §6.5 ชี้ว่าร้ายแรงที่สุดของระบบเก่า
+// readiness จึงต้องดูสุขภาพ AMQP ตรง ๆ เพื่อให้ orchestrator restart pod
+// แทนที่จะ route traffic เข้าหลุมดำ
+//
+// TODO(auto-reconnect): ทางแก้ที่ถูกจริงคือให้ RPCPool กู้ channel ของตัวเองด้วย
+// amqp.Channel.NotifyClose แล้วเปิดใหม่ผ่าน Manager.Channel พร้อม re-consume
+// amq.rabbitmq.reply-to ของช่องนั้น ทดสอบได้โดยไม่ต้องมี broker จริงเพราะ pool คุยกับ
+// amqpChannel interface (rpc.go) อยู่แล้ว และ newRPCPool รับ open func() (amqpChannel, error)
+// ซึ่ง fake ได้ตรง ๆ — รอบนี้ทำแค่ให้ readiness บอกความจริง
+func (m *Manager) Healthy() bool {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.conn != nil && !m.conn.IsClosed()
+}
+
 func (m *Manager) Close() error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
