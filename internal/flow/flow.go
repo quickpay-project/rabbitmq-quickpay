@@ -58,7 +58,18 @@ func (f *Flow) UpdateSpec(s model.GroupSpec) { f.spec.Store(&s) }
 // ห้ามใส่ select {} หรือ block ถาวรตรงนี้เด็ดขาด ระบบเก่าทำแบบนั้นที่
 // conswithdraw.go:288 ทำให้ตอน AMQP หลุด worker ออกหมดแต่ goroutine ค้างถาวร
 // supervisor จึงไม่เคยรู้ว่ามันตายและ readiness ยังรายงานว่าปกติ
+//
+// ctx is passed through to Process but Run ignores ctx.Done() — shutdown is Drain-driven.
+// Run is single-use per Flow: calling it twice returns an error on the second call.
 func (f *Flow) Run(ctx context.Context) error {
+	// Guard against re-use: if tag is already set, this Flow was already run
+	f.mu.Lock()
+	if f.tag != "" {
+		f.mu.Unlock()
+		return errors.New("Flow.Run called more than once — flows are single-use, create a new Flow")
+	}
+	f.mu.Unlock()
+
 	defer func() {
 		f.mu.Lock()
 		select {
@@ -83,9 +94,27 @@ func (f *Flow) Run(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
+
+	// Publish tag and check if Drain already called — must do both atomically.
+	// If Drain won the race, it saw tag == "" and skipped Cancel, so we do it now.
 	f.mu.Lock()
 	f.tag = tag
+	draining := f.draining
 	f.mu.Unlock()
+	if draining {
+		_ = f.opts.Broker.Cancel(tag)
+	}
+
+	// Watchdog: if ctx cancels, stop pulling new messages
+	done := make(chan struct{})
+	defer close(done)
+	go func() {
+		select {
+		case <-ctx.Done():
+			_ = f.opts.Broker.Cancel(tag)
+		case <-done:
+		}
+	}()
 
 	var wg sync.WaitGroup
 	for i := 0; i < prefetch; i++ {

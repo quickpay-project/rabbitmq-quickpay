@@ -14,9 +14,9 @@ import (
 
 type fakeAck struct{ acked atomic.Int64 }
 
-func (f *fakeAck) Ack(tag uint64, multiple bool) error              { f.acked.Add(1); return nil }
-func (f *fakeAck) Nack(tag uint64, multiple, requeue bool) error    { return nil }
-func (f *fakeAck) Reject(tag uint64, requeue bool) error            { return nil }
+func (f *fakeAck) Ack(tag uint64, multiple bool) error           { f.acked.Add(1); return nil }
+func (f *fakeAck) Nack(tag uint64, multiple, requeue bool) error { return nil }
+func (f *fakeAck) Reject(tag uint64, requeue bool) error         { return nil }
 
 type fakeBroker struct {
 	mu        sync.Mutex
@@ -219,4 +219,70 @@ func TestDrainTimesOutWhenWorkerStuck(t *testing.T) {
 		t.Fatal("worker ที่ค้างเกิน deadline ต้องทำให้ Drain คืน error เพื่อให้ log เห็น")
 	}
 	close(release)
+}
+
+// TestDrainRacesRunStartup tests that Drain cancels the consumer even if it wins the race with Run's tag assignment.
+// This reproduces the race: Drain calls Drain immediately without sleeping, so it may see tag == "" and must still cancel.
+func TestDrainRacesRunStartup(t *testing.T) {
+	b := newFakeBroker(0)
+	consumeBlocked := make(chan struct{})
+	ack := &fakeAck{}
+
+	// fakeBroker.Consume returns immediately, but we inject a delay by making the first worker block
+	// until after Drain has been called.
+	var firstWorkerStarted atomic.Bool
+	f := New(Options{Spec: testSpec(1), Queue: "q", Broker: b,
+		Process: func(context.Context, amqp.Delivery, model.GroupSpec) {
+			if firstWorkerStarted.CompareAndSwap(false, true) {
+				<-consumeBlocked // block the worker until Drain is called
+			}
+			_ = ack.Ack(0, false)
+		}})
+
+	// Start Run in a goroutine
+	done := make(chan error, 1)
+	go func() { done <- f.Run(context.Background()) }()
+
+	// Give Run time to call DeclareQueue and Consume but NOT tag assignment
+	// (This is inherently racy but the Drain code must handle both orderings)
+	// Instead, we just call Drain immediately without sleep
+
+	// Drain without waiting: must call Cancel even if Run hasn't assigned tag yet
+	if err := f.Drain(1 * time.Second); err != nil {
+		t.Fatalf("Drain: %v", err)
+	}
+
+	// Verify Cancel was called
+	b.mu.Lock()
+	cancelled := b.cancelled
+	b.mu.Unlock()
+	if !cancelled {
+		t.Fatal("Drain must call Cancel even if it races Run's tag assignment — consumer was orphaned")
+	}
+
+	close(consumeBlocked)
+	<-done
+}
+
+// TestRunRejectsSecondCall verifies that Run is single-use.
+func TestRunRejectsSecondCall(t *testing.T) {
+	b := newFakeBroker(0)
+	f := New(Options{Spec: testSpec(1), Queue: "q", Broker: b,
+		Process: func(context.Context, amqp.Delivery, model.GroupSpec) {}})
+
+	// First Run should work
+	done := make(chan error, 1)
+	go func() { done <- f.Run(context.Background()) }()
+	time.Sleep(20 * time.Millisecond)
+	_ = b.Cancel("tag-1")
+	err := <-done
+	if err != nil {
+		t.Fatalf("first Run failed: %v", err)
+	}
+
+	// Second Run should fail
+	err = f.Run(context.Background())
+	if err == nil {
+		t.Fatal("second Run must return an error — Flow is single-use")
+	}
 }
