@@ -85,27 +85,70 @@ ALLOWED_IPS=…           # เดิมชื่อ WISHLIST_IP
 
 ## 2. สิ่งที่ลูกค้าผู้เรียกเห็น
 
-### เหมือนเดิม ไม่ต้องแก้โค้ดฝั่ง caller
+### วัดของจริงแล้ว — ยิง request เดียวกันเข้าทั้งสองระบบแล้วเทียบ field ต่อ field (2026-09-28)
 
-| | |
-|---|---|
-| Method / Path | `POST /deposit` `/depositauto` `/withdraw` `/withdrawauto` |
-| Body | ฟิลด์ชุดเดิมทั้งหมด v2 **ไม่แตะ body เลย** ส่งต่อ byte ต่อ byte อ่านแค่ `ref_field` ไปเก็บ log |
-| Header auth | `Authorization: Bearer <token>` ส่งต่อขึ้น upstream เหมือนเดิม |
-| Response body | ของ upstream ดิบ ๆ `Content-Type: application/json` รูปแบบ `{"code":0,…}` เหมือนเดิม |
+**เส้นทางสำเร็จ แทบไม่เปลี่ยนเลย**
 
-### ที่เปลี่ยน — 5 จุด
+| flow | ฟิลด์ที่เหมือนเดิม | หายไป | เพิ่มมา |
+|---|---|---|---|
+| `deposit` | **24** | **0** | `data.details[].payment_amount` |
+| `depositauto` | ทั้งหมด | **0** | **0** |
+| `withdraw` | ทั้งหมด | **0** | **0** |
+| `withdrawauto` | ทั้งหมด | **0** | **0** |
+
+`deposit` เทียบด้วยการยิงจริงทั้งสองฝั่ง อีก 3 เส้นเทียบ struct ของ v1 กับ response จริง
+ของ goquickpay ที่เก็บไว้ใน `attempt_logs` — **ไม่มีฟิลด์ไหนหายไปเลยสักเส้น**
+`payment_amount` เป็นของที่ goquickpay ส่งมาอยู่แล้วแต่ v1 ทิ้ง เพราะ struct ไม่ได้ประกาศไว้
+HTTP status ของเส้นทางสำเร็จก็ `200` เหมือนกันทั้งคู่
+
+### v1 ไม่ได้ส่ง body ผ่าน แต่ประกอบใหม่ — ต้นเหตุของความต่างทั้งหมด
+
+`sendToExternalDepositAPI` (`consdeposit.go:180-199`) แกะ response เข้า struct แล้ว
+`json.Marshal` ออกมาใหม่ ฟิลด์ที่ struct ไม่รู้จักจึงหายไป และฟิลด์ที่ response ไม่มีจะได้ค่า zero
+ส่วน `processDepositMessage` (`consdeposit.go:266-278`) เจอ HTTP 400 แล้ว**ทิ้ง body เดิม
+สร้างใหม่เป็น `{"code":400,"message":<message เดิม>}`**
+
+### ที่เปลี่ยนจริง — เฉพาะเส้นทางที่ล้มเหลว
+
+| เคส | v1 | v2 | ผลต่อ caller |
+|---|---|---|---|
+| **validation ตก** ← เจอบ่อยสุด | `200` `{"code":400,"message":"amount is required"}` | `400` `{"code":1,"message":"amount is required"}` | `message` เท่าเดิม แต่ **`code` เปลี่ยน 400 → 1** เพราะ `1` คือค่าจริงจาก goquickpay ส่วน `400` v1 เขียนขึ้นเอง — **ใครดัก `code === 400` จะพัง นี่คือความเสี่ยงอันดับ 1** |
+| **auth ผิด / token หมดอายุ** | `200` `{"code":0,"message":"","data":{…ค่าว่าง}}` | `401` `{"error":"Authorization header required"}` | **v1 คืน `code:0` = สำเร็จ ทั้งที่ล้มเหลว** เพราะแกะ `{"error":…}` เข้า struct ไม่ได้ v2 บอกความจริง — ถ้าหลังเปลี่ยนเริ่มเห็น error เรื่อง token แปลว่ามีปัญหามาก่อนแล้วแต่ระบบเดิมซ่อนไว้ |
+| **merchant / server ผิด** | `200` + body เดิม | `200` หรือ `500` + body เดิม | `code`/`message` เหมือนกัน เปลี่ยนแค่ status |
+
+### HTTP status ที่ goquickpay ตอบจริง (เก็บจาก `attempt_logs` + probe ตรง)
+
+`200` สำเร็จ · `200` ล้มเหลวเชิงธุรกิจบางกรณี (`code:500 Unsupported merchant id`) ·
+`400` validation และออเดอร์ซ้ำ · `401` auth 3 แบบ · `404` path ไม่มีจริง ·
+`500` `MerchantKey ID Not Found IN Agent Wallet`
+
+ปัญหาเดียวกันตอบคนละ status ได้ (mid ไม่รองรับ → 200, mid ไม่มีจริง → 500)
+และ 2 กรณีไม่มีฟิลด์ `code` เลย ใช้ `{"error":…}` แทน
+
+### ที่เปลี่ยนนอกเหนือจาก body
 
 | # | เรื่อง | v1 | v2 | ผลต่อ caller |
 |---|---|---|---|---|
-| 1 | **HTTP status** | `200` เสมอ (`w.Write` ไม่เคยเรียก `WriteHeader`) | ส่ง status ของ upstream กลับตรง ๆ | ยิง deposit ด้วย `bank_code` ผิดรูปแบบ v2 ตอบ **400** v1 ตอบ **200** พร้อม body เดียวกัน — ใครเขียน `if status == 200` แล้วค่อยอ่าน `code` จะพัง |
-| 2 | **IP allowlist** | บังคับแค่ `withdraw` เส้นเดียว อีก 3 เส้นถูก comment ทิ้ง (`controllers/homeController.go:195, 226, 257`) | บังคับครบ 4 เส้น | **จุดที่จะเงียบ ๆ แล้วพัง** ใครยิง deposit ได้ทุกวันนี้โดยไม่เคยอยู่ใน whitelist จะโดน 403 ทันทีที่ตัด |
-| 3 | **เวลารอสูงสุด** | รอ reply 90s แต่ worker ตั้ง `http.Client{Timeout: 300s}` — ขัดกันเอง | `rpc_timeout` 30s + `x-deadline` กำกับ worker | v1 ตอบ 504 ไปแล้วแต่ออเดอร์ยังถูกสร้างอีก 3 นาทีให้หลัง (ghost order) v2 worker ไม่ยิง upstream หลัง caller เลิกรอ |
-| 4 | **`X-Trace-Id`** | ไม่มี | ติดมาทุก response | เก็บลง log ฝั่ง caller แล้วเทียบกับ `request_logs`/`attempt_logs` ได้ทันที ถ้า caller ส่ง `X-Trace-Id` มาเอง v2 เก็บไว้ใน `caller_trace_id` ให้ join กัน |
-| 5 | **status ใหม่** | มีแค่ 200 / 403 / 504 | เพิ่ม `404` ไม่มี group นั้น, `503`+`Retry-After: 5` flow ยังไม่พร้อม, `413` body เกิน 4MB, `405` ไม่ใช่ POST | `503` ควร retry ไม่ใช่ทิ้ง |
+| 1 | **IP allowlist** | บังคับแค่ `withdraw` เส้นเดียว อีก 3 เส้นถูก comment ทิ้ง (`controllers/homeController.go:195, 226, 257`) | บังคับครบ 4 เส้น | **จุดที่จะเงียบ ๆ แล้วพัง** ใครยิง deposit ได้ทุกวันนี้โดยไม่เคยอยู่ใน whitelist จะโดน 403 ทันทีที่ตัด |
+| 2 | **เวลารอสูงสุด** | รอ reply 90s แต่ worker ตั้ง `http.Client{Timeout: 300s}` — ขัดกันเอง | `rpc_timeout` 30s + `x-deadline` กำกับ worker | v1 ตอบ 504 ไปแล้วแต่ออเดอร์ยังถูกสร้างอีก 3 นาทีให้หลัง (ghost order) v2 worker ไม่ยิง upstream หลัง caller เลิกรอ |
+| 3 | **`X-Trace-Id`** | ไม่มี | ติดมาทุก response | เก็บลง log ฝั่ง caller แล้วเทียบกับ `request_logs`/`attempt_logs` ได้ทันที ถ้า caller ส่ง `X-Trace-Id` มาเอง v2 เก็บไว้ใน `caller_trace_id` ให้ join กัน |
+| 4 | **status ใหม่จาก gateway เอง** | มีแค่ 200 / 403 / 504 | เพิ่ม `404` ไม่มี group นั้น, `503`+`Retry-After: 5` flow ยังไม่พร้อม, `413` body เกิน 4MB, `405` ไม่ใช่ POST | `503` ควร retry ไม่ใช่ทิ้ง |
 
-**สรุปสำหรับ caller** ถ้าอ่าน `code` ใน body เป็นหลักและไม่ดู HTTP status เลย เปลี่ยนแค่ domain จบ
-แต่ต้องเช็คสองอย่างก่อน: **IP อยู่ใน `ALLOWED_IPS` หรือยัง** และ **โค้ดตัดสินใจจาก HTTP status หรือเปล่า**
+### สิ่งที่ต้องบอกทีมที่เรียกเข้ามา
+
+> รายการที่สำเร็จ response เหมือนเดิมทุกอย่าง ไม่ต้องแก้อะไร แต่ถ้าโค้ดคุณดัก `code === 400`
+> เพื่อจับรายการที่กรอกข้อมูลผิด ให้เปลี่ยนเป็น `code !== 0` เพราะค่าจริงจาก API คือ `1`
+> และถ้าเริ่มเห็น error เรื่อง token หลังเปลี่ยน แปลว่า token มีปัญหามาก่อนแล้วแต่ระบบเดิมไม่ได้บอก
+
+**ตัดสินใจแล้ว (2026-09-28): ใช้ passthrough ตามที่ v2 เป็นอยู่ ไม่ทำ compatibility mode**
+ที่เคยพิจารณาคือแปลง `code` กลับเป็น `400` ตอน upstream ตอบ 400 เพื่อให้ caller เดิมไม่ต้องแก้เลย
+แต่เท่ากับลอกความเพี้ยนของ v1 มาไว้ในระบบใหม่ จึงไม่ทำ
+
+### ตัวเลขที่ยังขาด
+
+**อัตราส่วน success : error จริงบน production** หาไม่ได้ เพราะ `deposit_logs` และตารางพี่น้อง
+ของ v1 ว่างเปล่าทั้งหมด (0 แถว) — โค้ด insert มีแต่ไม่เคยทำงาน ดู `traffic-analysis.md` §6
+ถ้ารู้อัตราส่วนนี้จะประเมินความเสี่ยงของการสลับได้แม่นกว่านี้มาก
 
 ---
 
