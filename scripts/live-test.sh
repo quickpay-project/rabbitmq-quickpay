@@ -17,7 +17,9 @@ GATEWAY="${GATEWAY:-https://deposit-service-mq-v2.ebwved.easypanel.host}"
 MID="$(grep -m1 '^mid *:' "$LOCAL" | sed 's/^mid *: *//; s/ .*//')"
 TOKEN="$(grep -m1 '^api token *:' "$LOCAL" | sed 's/^api token *: *//; s/[[:space:]]*$//')"
 CALLBACK="$(grep -m1 '^callback url *:' "$LOCAL" | sed 's/^callback url *: *//; s/[[:space:]]*$//')"
-DSN="$(grep -m1 '^DATABASE_URL=' "$LOCAL" | sed 's/^DATABASE_URL=//')"
+# DSN จาก env ชนะค่าในไฟล์ — ไฟล์มีได้หลาย DATABASE_URL (dev/prod)
+# grep -m1 จะได้ตัวแรกเสมอ ซึ่งอาจไม่ใช่ตัวที่ gateway กำลังใช้อยู่
+DSN="${DSN:-$(grep -m1 '^DATABASE_URL=' "$LOCAL" | sed 's/^DATABASE_URL=//')}"
 
 # แปลง DSN แบบ key=value ของ gorm เป็นอาร์กิวเมนต์ psql
 pg() {

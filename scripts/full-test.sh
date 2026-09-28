@@ -14,7 +14,9 @@ set -uo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 LOCAL="$ROOT/CLAUDE.local.md"
 GATEWAY="${GATEWAY:-https://deposit-service-mq-v2.ebwved.easypanel.host}"
-DSN="$(grep -m1 '^DATABASE_URL=' "$LOCAL" | sed 's/^DATABASE_URL=//')"
+# DSN จาก env ชนะค่าในไฟล์ — ไฟล์มีได้หลาย DATABASE_URL (dev/prod)
+# grep -m1 จะได้ตัวแรกเสมอ ซึ่งอาจไม่ใช่ตัวที่ gateway กำลังใช้อยู่
+DSN="${DSN:-$(grep -m1 '^DATABASE_URL=' "$LOCAL" | sed 's/^DATABASE_URL=//')}"
 TMP="${TMPDIR:-/tmp}/gwtest.$$"; mkdir -p "$TMP"
 
 pg() {
