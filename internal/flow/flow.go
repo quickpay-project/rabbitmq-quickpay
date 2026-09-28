@@ -60,7 +60,7 @@ func (f *Flow) UpdateSpec(s model.GroupSpec) { f.spec.Store(&s) }
 // Run บล็อกจนกว่า channel ของ broker จะปิด แล้ว return เสมอ
 //
 // ห้ามใส่ select {} หรือ block ถาวรตรงนี้เด็ดขาด ระบบเก่าทำแบบนั้นที่
-// conswithdraw.go:288 ทำให้ตอน AMQP หลุด worker ออกหมดแต่ goroutine ค้างถาวร
+// conswithdraw.go:284 ทำให้ตอน AMQP หลุด worker ออกหมดแต่ goroutine ค้างถาวร
 // supervisor จึงไม่เคยรู้ว่ามันตายและ readiness ยังรายงานว่าปกติ
 //
 // ctx is passed through to Process and also used to cancel the consumer (via watchdog).
