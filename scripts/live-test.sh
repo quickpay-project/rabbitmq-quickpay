@@ -31,15 +31,29 @@ pg() {
 order_id() { echo "MQV2-$(date +%Y%m%d-%H%M%S)-$RANDOM"; }
 
 payload() { # $1=flow  $2=order_id  $3=amount
+  # เส้น auto ไม่ต้องส่ง mid — ฝั่ง quickpay ผูก mid ไว้กับ user แล้วเลือกให้เอง
   case "$1" in
-    deposit|depositauto) cat <<JSON
+    deposit) cat <<JSON
 {"account_name":"test agent auto","account_number":"1234567890","amount":$3,
  "bank_code":"004","callback_url":"$CALLBACK","ref1":"$2",
  "customer_order_id":"$2","mid":"$MID","qr_type":"promptpay"}
 JSON
     ;;
-    withdraw|withdrawauto) cat <<JSON
+    depositauto) cat <<JSON
+{"account_name":"test agent auto","account_number":"1234567890","amount":$3,
+ "bank_code":"004","callback_url":"$CALLBACK","ref1":"$2",
+ "customer_order_id":"$2","qr_type":"promptpay"}
+JSON
+    ;;
+    withdraw) cat <<JSON
 {"customer_order_id":"$2","mid":"$MID","account_number":"1234567890",
+ "bank_code":"KBANK","bank_name":"KASIKORNBANK","account_name":"test agent auto",
+ "amount":$3,"cost":0,"withdraw_type":"normal","settlement":"auto",
+ "non_funded_type":"","callback_url":"$CALLBACK","remark":"mq gateway v2 live test"}
+JSON
+    ;;
+    withdrawauto) cat <<JSON
+{"customer_order_id":"$2","account_number":"1234567890",
  "bank_code":"KBANK","bank_name":"KASIKORNBANK","account_name":"test agent auto",
  "amount":$3,"cost":0,"withdraw_type":"normal","settlement":"auto",
  "non_funded_type":"","callback_url":"$CALLBACK","remark":"mq gateway v2 live test"}
@@ -66,7 +80,8 @@ fire() { # $1=flow  $2=amount
 
 case "${1:-all}" in
   deposit|depositauto|withdraw|withdrawauto) fire "$1" "${2:-100}" ;;
-  all) for f in deposit depositauto withdraw withdrawauto; do fire "$f" "${2:-100}"; done ;;
+  all) # เพิ่มยอดทีละบาท เพราะถอนซ้ำ account+amount เดิมในเวลาใกล้กันโดน Duplicate withdraw request
+       n=0; for f in deposit depositauto withdraw withdrawauto; do fire "$f" "$(( ${2:-100} + n ))"; n=$((n+1)); done ;;
   trace)
     pg -x -c "SELECT r.trace_id, r.group_name, r.business_ref, r.status, r.http_status,
                      r.created_at, r.finished_at,
