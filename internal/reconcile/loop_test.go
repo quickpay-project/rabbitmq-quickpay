@@ -3,6 +3,8 @@ package reconcile
 import (
 	"context"
 	"errors"
+	"fmt"
+	"strings"
 	"testing"
 	"time"
 
@@ -51,5 +53,47 @@ func TestLoopRunWithZeroIntervalDoesNotPanic(t *testing.T) {
 	case <-done:
 	case <-time.After(2 * time.Second):
 		t.Fatal("Run ไม่ยอม return หลัง ctx ถูกยกเลิก")
+	}
+}
+
+// DB ที่ไม่มี group เลยคือภาวะที่ทุก request จะได้ 404 แต่ service ยังดูปกติทุกอย่าง
+// จึงต้องมีเสียงเตือน "ทุกรอบ" ไม่ใช่ครั้งเดียวตอน start ที่เลื่อนหายไปจากจอ
+func TestOnceWarnsWhenNoGroups(t *testing.T) {
+	var lines []string
+	l := &Loop{
+		Loader: fakeLoader{}, Registry: flow.NewRegistry(), Factory: noFlow,
+		Logf: func(f string, a ...any) { lines = append(lines, fmt.Sprintf(f, a...)) },
+	}
+	for i := 0; i < 3; i++ {
+		if err := l.Once(context.Background(), context.Background()); err != nil {
+			t.Fatalf("Once: %v", err)
+		}
+	}
+	n := 0
+	for _, s := range lines {
+		if strings.Contains(s, "ไม่มี group") {
+			n++
+		}
+	}
+	if n != 3 {
+		t.Fatalf("อยากได้คำเตือนทุกรอบ (3 ครั้ง) แต่ได้ %d ครั้งจาก %q", n, lines)
+	}
+}
+
+// มี group แล้วต้องเงียบ ไม่งั้นคำเตือนจะกลายเป็นเสียงรบกวนที่คนเลิกอ่าน
+func TestOnceSilentWhenGroupsExist(t *testing.T) {
+	var lines []string
+	l := &Loop{
+		Loader:   fakeLoader{groups: []model.GroupSpec{spec("g1", "deposit", 50, "https://a")}},
+		Registry: flow.NewRegistry(), Factory: noFlow,
+		Logf: func(f string, a ...any) { lines = append(lines, fmt.Sprintf(f, a...)) },
+	}
+	if err := l.Once(context.Background(), context.Background()); err != nil {
+		t.Fatalf("Once: %v", err)
+	}
+	for _, s := range lines {
+		if strings.Contains(s, "ไม่มี group") {
+			t.Fatalf("ไม่ควรเตือนตอนมี group แต่ได้ %q", s)
+		}
 	}
 }

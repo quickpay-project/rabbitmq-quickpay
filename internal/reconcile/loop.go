@@ -50,6 +50,21 @@ func (l *Loop) Once(ctx, flowCtx context.Context) error {
 	if err != nil {
 		return err
 	}
+
+	// DB ที่ไม่มี group เลยคือภาวะที่ service ดูปกติทุกอย่างแต่ตายสนิท:
+	// สตาร์ทสำเร็จ, /readyz ตอบ ready:true (registry ว่าง = ไม่มีใครไม่พร้อม)
+	// แต่ทุก request ได้ 404 เพราะไม่มี flow ให้ route ไปหา
+	// เกิดได้จริงตอนขึ้น prod เพราะ migration สร้างแต่ตาราง ไม่ได้ใส่ group ให้
+	//
+	// เตือนทุกรอบไม่ใช่ครั้งเดียวตอน start โดยตั้งใจ — คำเตือนตอนบูตจะเลื่อนหายไปจากจอ
+	// ก่อนที่ใครจะมาดู และนี่คือภาวะที่ควรดังจนกว่าจะมีคนแก้ ไม่ใช่เหตุการณ์ที่ผ่านไปแล้ว
+	// ไม่ทำให้ readiness แดงเพราะ restart ไม่ได้ทำให้ group โผล่ขึ้นมา และการรันโดยยังไม่มี
+	// group เป็นเรื่องปกติของ dev — ความจริงต้องดัง แต่ไม่ควรกลายเป็น pod ที่ไม่มีวันพร้อม
+	if len(desired) == 0 {
+		l.logf("⚠️  ไม่มี group ใน DB เลย — ทุก request จะได้ 404 ทั้งที่ /readyz ยังเขียว " +
+			"(รัน ./scripts/seed-groups.sh --apply หรือเพิ่มแถวใน message_group)")
+	}
+
 	for _, a := range Diff(desired, l.Registry.Snapshot()) {
 		l.apply(flowCtx, a)
 	}
