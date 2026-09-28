@@ -11,9 +11,17 @@ RUN CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o /out/gateway ./cmd/gate
 
 # ---- runtime ----
 FROM alpine:3.20
-# ca-certificates จำเป็นสำหรับต่อ https ไป upstream, tzdata เพราะ DSN ตั้ง TimeZone=Asia/Bangkok
+# ca-certificates จำเป็นสำหรับต่อ https ไป upstream
+# tzdata ทำให้ TZ ข้างล่างใช้งานได้จริง — alpine ไม่มี /usr/share/zoneinfo ติดมา
 RUN apk add --no-cache ca-certificates tzdata \
  && adduser -D -u 10001 app
+
+# เวลาใน log มาจาก time.Now() ซึ่งใช้ TZ ของ process ไม่ใช่ค่าใน DSN
+# (TimeZone=Asia/Bangkok ใน DATABASE_URL มีผลกับ session ของ Postgres เท่านั้น)
+# ไม่ตั้งไว้ log จะเป็น UTC แล้วไม่ตรงกับนาฬิกาของคนอ่าน ซึ่งทำให้ไล่เหตุการณ์ตอนมีปัญหาช้าลง
+# override ด้วย env ตอน run ได้ถ้า deploy ที่โซนอื่น
+ENV TZ=Asia/Bangkok
+
 COPY --from=build /out/gateway /usr/local/bin/gateway
 USER app
 EXPOSE 4000
