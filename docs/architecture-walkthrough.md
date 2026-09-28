@@ -636,6 +636,33 @@ WHERE a.outcome='fatal' AND a.http_status IS NULL;
 แปลว่าส่งคำขอออกไปแล้วแต่ไม่ได้คำตอบกลับมา **ปลายทางอาจสร้างออเดอร์ไปแล้ว**
 ระบบตั้งใจไม่ retry เคสนี้ ต้องเช็คกับ goquickpay ด้วยมือ
 
+### ใครถูกบล็อกที่ชั้น allowlist บ้าง
+
+**request ที่ถูกปฏิเสธไม่เคยถึง `request_logs`** เพราะเช็ค IP เป็นขั้นที่ 3 ส่วน `BeginRequest`
+เป็นขั้นที่ 8 — `request_logs` ที่ว่างจึงแยกไม่ออกระหว่าง "ทุกคนถูกบล็อก" กับ "ไม่มีใครยิงเข้ามา"
+
+ตาราง `blocked_ip` เก็บเป็นตัวนับไว้ตอบคำถามนี้ (1 แถวต่อ ip+path+เหตุผล ไม่ใช่ 1 แถวต่อ request)
+
+```sql
+-- ใครถูกบล็อก เสียไปกี่รายการ เริ่มเมื่อไหร่
+SELECT client_ip, path, reason, count, first_seen, last_seen
+FROM blocked_ip ORDER BY count DESC;
+
+-- เฉพาะ IPv6 — ลูกค้า dual-stack ที่ ALLOWED_IPS (ซึ่งเป็น IPv4 ล้วน) ไม่ครอบคลุม
+SELECT * FROM blocked_ip WHERE client_ip LIKE '%:%';
+
+-- เพิ่งเริ่มโดนใน 1 ชั่วโมงล่าสุด = มีอะไรเปลี่ยน
+SELECT * FROM blocked_ip WHERE first_seen > now() - interval '1 hour';
+```
+
+| `reason` | แปลว่า | แก้ที่ไหน |
+|---|---|---|
+| `not_in_allowlist` | IP ไม่อยู่ใน `ALLOWED_IPS` | เพิ่ม IP หรือดูว่า `TRUSTED_PROXY_COUNT` ถูกไหม |
+| `missing_trusted_header` | ตั้ง `CLIENT_IP_HEADER` ไว้แต่คำขอไม่มี header นั้น | คำขอไม่ได้ผ่าน proxy ที่ประกาศว่าเชื่อถือ |
+
+ถ้า `count` ในตารางน้อยกว่าที่เห็นใน log ให้ดูบรรทัด `⚠️ blocked_ip: ทิ้งไป N ครั้งเพราะคิวเต็ม`
+— ตัวนับนี้ยอมทิ้งเมื่อล้นโดยตั้งใจ เพื่อไม่ให้การถูกปฏิเสธไปถ่วงความเร็วหรือกลายเป็นคันโยกให้ยิงถล่ม
+
 ### แก้ปัญหาโดยไม่ต้อง deploy
 
 ```sql

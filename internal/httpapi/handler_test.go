@@ -319,3 +319,62 @@ func TestOutOfRangeUpstreamStatusBecomes502(t *testing.T) {
 		}
 	}
 }
+
+type fakeBlocked struct{ got []store.BlockedInput }
+
+func (f *fakeBlocked) Record(in store.BlockedInput) { f.got = append(f.got, in) }
+
+func denyingHandler(fb BlockedRecorder, ipHeader string) *Handler {
+	return New(Options{
+		Registry: registryWith("deposit", flow.StateRunning, "https://u"),
+		Logger:   newFakeLogger(),
+		Caller:   &fakeCaller{},
+		Cfg: &config.Config{QueuePrefix: "v2.", AllowedIPs: []string{"9.9.9.9"},
+			AllowAllIPs: false, TrustedProxyCount: 0, ClientIPHeader: ipHeader},
+		NewID:   func() string { return "trace-fixed" },
+		Blocked: fb,
+	})
+}
+
+func postFrom(h *Handler, remote string) *httptest.ResponseRecorder {
+	r := httptest.NewRequest("POST", "/deposit", strings.NewReader("{}"))
+	r.RemoteAddr = remote
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, r)
+	return w
+}
+
+// IP ที่ไม่อยู่ในรายการต้องถูกนับ ไม่ใช่หายไปเงียบ ๆ ใน log ของ container ที่หายตอน restart
+// เป็นข้อมูลชิ้นเดียวที่ตอบได้ว่าใครถูกบล็อกไปเท่าไหร่ — เจ็บจริงตอน cutover 2026-09-28
+func TestForbiddenIsRecorded(t *testing.T) {
+	fb := &fakeBlocked{}
+	if w := postFrom(denyingHandler(fb, ""), "1.2.3.4:5555"); w.Code != http.StatusForbidden {
+		t.Fatalf("อยากได้ 403 แต่ได้ %d", w.Code)
+	}
+	if len(fb.got) != 1 {
+		t.Fatalf("อยากได้ 1 รายการ แต่ได้ %d", len(fb.got))
+	}
+	if fb.got[0].ClientIP != "1.2.3.4" || fb.got[0].Path != "/deposit" ||
+		fb.got[0].Reason != store.BlockedNotInAllowlist {
+		t.Fatalf("ได้ %+v", fb.got[0])
+	}
+}
+
+// ตั้ง CLIENT_IP_HEADER แล้วคำขอไม่มี header นั้น ต้องแยกเหตุผลออกจากกรณี IP ไม่อยู่ในรายการ
+// เพราะสองอย่างนี้แก้คนละทาง — อันหนึ่งแก้ที่รายการ IP อีกอันแก้ที่เส้นทาง proxy
+func TestForbiddenRecordsMissingHeaderReason(t *testing.T) {
+	fb := &fakeBlocked{}
+	if w := postFrom(denyingHandler(fb, "CF-Connecting-IP"), "1.2.3.4:5555"); w.Code != http.StatusForbidden {
+		t.Fatalf("อยากได้ 403 แต่ได้ %d", w.Code)
+	}
+	if len(fb.got) != 1 || fb.got[0].Reason != store.BlockedMissingIPHeader {
+		t.Fatalf("ได้ %+v", fb.got)
+	}
+}
+
+// Blocked เป็น nil ได้ ต้องไม่ panic
+func TestForbiddenWithoutRecorderDoesNotPanic(t *testing.T) {
+	if w := postFrom(denyingHandler(nil, ""), "1.2.3.4:5555"); w.Code != http.StatusForbidden {
+		t.Fatalf("อยากได้ 403 แต่ได้ %d", w.Code)
+	}
+}

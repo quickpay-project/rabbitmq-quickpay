@@ -139,7 +139,11 @@ queue ของ v1 ต้องมี consumer เท่าเดิม ส่�
 -- 1. มีอะไรค้าง pending ไหม
 SELECT count(*) FROM request_logs WHERE status='pending' AND created_at < now() - interval '1 min';
 
--- 2. มี 403 โผล่ไหม (= IP ที่ยังไม่ได้ใส่ในรายการ) — ดูจาก log หา 🚫 ปฏิเสธ IP
+-- 2. มี 403 โผล่ไหม (= IP ที่ยังไม่ได้ใส่ในรายการ)
+SELECT client_ip, path, reason, count, first_seen, last_seen
+FROM blocked_ip ORDER BY last_seen DESC;
+-- IPv6 โดยเฉพาะ: ALLOWED_IPS เป็น IPv4 ล้วน ลูกค้า dual-stack จะโดนบล็อกถ้า Cloudflare เสิร์ฟ AAAA
+SELECT * FROM blocked_ip WHERE client_ip LIKE '%:%';
 
 -- 3. เคสที่ต้องกระทบยอดด้วยมือ
 SELECT r.trace_id, r.business_ref, a.url, a.error_message

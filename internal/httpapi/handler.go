@@ -24,6 +24,11 @@ type RequestLogger interface {
 	MarkClientOutcome(ctx context.Context, traceID string, httpStatus int) error
 }
 
+// BlockedRecorder รับได้เสมอและต้องไม่บล็อก — อยู่ในเส้นทางของทุกคำขอที่ถูกปฏิเสธ
+type BlockedRecorder interface {
+	Record(in store.BlockedInput)
+}
+
 type RPCCaller interface {
 	Call(ctx context.Context, queue string, pub amqp.Publishing) (*amqp.Delivery, error)
 }
@@ -36,6 +41,11 @@ type Options struct {
 	NewID    func() string
 	Now      func() time.Time
 	Logf     func(string, ...any)
+
+	// Blocked นับ request ที่ถูกปฏิเสธที่ชั้น allowlist ลง DB — nil ได้ (ข้ามไป)
+	// จำเป็นเพราะการปฏิเสธเกิดก่อน BeginRequest คำขอพวกนี้จึงไม่มีร่องรอยใน request_logs
+	// ทำให้ตอบไม่ได้ว่าใครถูกบล็อกไปเท่าไหร่ ซึ่งเจ็บจริงตอน cutover 2026-09-28
+	Blocked BlockedRecorder
 
 	// AMQPHealthy บอกว่า connection ของ broker ยังใช้ได้ไหม (amqpx.Manager.Healthy)
 	// เป็น func เพื่อไม่ให้ httpapi ต้องรู้จัก amqpx และเพื่อให้ fake ได้ใน test
@@ -80,11 +90,16 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if !IsAllowed(ip, h.o.Cfg.AllowedIPs, h.o.Cfg.AllowAllIPs) {
 		// บอกให้ชัดว่าปฏิเสธเพราะหา IP ไม่ได้ ไม่ใช่เพราะ IP ไม่อยู่ในรายการ
 		// สองกรณีนี้แก้คนละทางและแยกไม่ออกจาก log ที่เขียนว่า "ปฏิเสธ IP " เฉย ๆ
+		reason := store.BlockedNotInAllowlist
 		if ip == "" && h.o.Cfg.ClientIPHeader != "" {
+			reason = store.BlockedMissingIPHeader
 			h.o.Logf("🚫 ไม่มี header %s ในคำขอที่ %s — คำขอไม่ได้ผ่าน proxy ที่ประกาศว่าเชื่อถือ",
 				h.o.Cfg.ClientIPHeader, r.URL.Path)
 		} else {
 			h.o.Logf("🚫 ปฏิเสธ IP %s ที่ %s", ip, r.URL.Path)
+		}
+		if h.o.Blocked != nil {
+			h.o.Blocked.Record(store.BlockedInput{ClientIP: ip, Path: r.URL.Path, Reason: reason})
 		}
 		http.Error(w, "forbidden", http.StatusForbidden)
 		return

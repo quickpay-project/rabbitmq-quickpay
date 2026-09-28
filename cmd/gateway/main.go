@@ -112,9 +112,16 @@ func main() {
 		Logf:     log.Printf,
 	}
 
+	// นับ request ที่ถูกปฏิเสธที่ชั้น allowlist ลง blocked_ip
+	// ผูกกับ flowCtx ไม่ใช่ loopCtx เพราะ loopCtx ถูกยกเลิกตั้งแต่ต้น shutdown
+	// ขณะที่ HTTP ยังรับงานที่ค้างอยู่ต่ออีกพัก — การปฏิเสธช่วงนั้นก็ควรถูกนับ
+	blocked := store.NewBlockedBuffer(st.RecordBlocked, 256)
+	blocked.Logf = log.Printf
+	go blocked.Run(flowCtx)
+
 	// 6. HTTP ขึ้นก่อน เพื่อให้ /healthz ตอบได้ระหว่างบูต
 	handler := httpapi.New(httpapi.Options{
-		Registry: registry, Logger: st, Caller: pool, Cfg: cfg,
+		Registry: registry, Logger: st, Caller: pool, Cfg: cfg, Blocked: blocked,
 		NewID: uuid.NewString, Logf: log.Printf,
 		// readyz ต้องเห็นว่า AMQP ตายด้วย ไม่ใช่ดูแค่สถานะ flow
 		AMQPHealthy: mgr.Healthy,

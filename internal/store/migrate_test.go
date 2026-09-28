@@ -12,7 +12,7 @@ func TestMigrateCreatesAllTables(t *testing.T) {
 	if err := Migrate(context.Background(), db); err != nil {
 		t.Fatalf("Migrate: %v", err)
 	}
-	for _, name := range []string{"message_group", "message_group_url", "request_logs", "attempt_logs", "schema_migrations"} {
+	for _, name := range []string{"message_group", "message_group_url", "request_logs", "attempt_logs", "blocked_ip", "schema_migrations"} {
 		if !tableExists(t, db, name) {
 			t.Errorf("ไม่พบตาราง %s", name)
 		}
