@@ -36,10 +36,12 @@ WHERE r.business_ref LIKE :ref_prefix AND a.outcome = 'success';
 \echo ''
 \echo '=== 5. worker_count ที่ควรตั้ง (สูตรจาก docs/traffic-analysis.md §5) ==='
 \echo '    worker = พีค rps x p95 วินาที x 3'
+-- หมายเหตุ: ถ้า p95 ออกมาเป็น 0 แปลว่า upstream เร็วกว่า 1ms (เช่น /healthz ของตัวเอง)
+-- ตัวเลข worker ที่ได้จะไม่มีความหมาย ต้องยิงใส่ upstream ที่มี latency ใกล้ของจริงก่อน
 SELECT 1.7 AS peak_rps_จริง,
-       round(percentile_cont(0.95) WITHIN GROUP (ORDER BY duration_ms)/1000.0, 3) AS p95_วินาที,
-       greatest(1, ceil(1.7 * percentile_cont(0.95) WITHIN GROUP (ORDER BY duration_ms)/1000.0 * 3))::int AS worker_ที่พอ,
-       (SELECT worker_count FROM message_group WHERE group_name = current_setting('myapp.grp', true)) AS ที่ตั้งอยู่
+       round((percentile_cont(0.95) WITHIN GROUP (ORDER BY duration_ms))::numeric / 1000, 3) AS p95_วินาที,
+       greatest(1, ceil(1.7 * (percentile_cont(0.95) WITHIN GROUP (ORDER BY duration_ms))::numeric / 1000 * 3))::int AS worker_ที่พอ,
+       (SELECT max(worker_count) FROM message_group) AS ที่ตั้งอยู่
 FROM attempt_logs a JOIN request_logs r USING (trace_id)
 WHERE r.business_ref LIKE :ref_prefix AND a.outcome = 'success';
 
