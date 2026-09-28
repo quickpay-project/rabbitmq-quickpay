@@ -20,7 +20,10 @@ type Config struct {
 	RPCChannelPool    int
 	GracefulTimeout   time.Duration
 	TrustedProxyCount int
-	MigrateOnStart    bool
+	// ClientIPHeader ว่าง = นับ hop ตาม TrustedProxyCount เหมือนเดิม
+	// ตั้งไว้ = อ่าน IP จาก header นั้นตรง ๆ เช่น CF-Connecting-IP ของ Cloudflare
+	ClientIPHeader string
+	MigrateOnStart bool
 }
 
 // Load อ่าน config จาก getenv แล้วคืน error ทันทีถ้าตั้งผิด
@@ -55,6 +58,7 @@ func Load(getenv func(string) string) (*Config, error) {
 	}
 
 	c.Port = str(getenv, "PORT", "4000")
+	c.ClientIPHeader = strings.TrimSpace(getenv("CLIENT_IP_HEADER"))
 	c.MigrateOnStart = boolean(getenv, "MIGRATE_ON_START", true)
 
 	c.ReconcileInterval = duration(getenv, "RECONCILE_INTERVAL", 30*time.Second, &errs)

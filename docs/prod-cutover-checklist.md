@@ -34,7 +34,7 @@ schema_migrations   1 แถว
 | 1.2 | **ไล่เก็บ IP ของทุกทีมที่ยิง `deposit` / `depositauto` / `withdrawauto`** | v1 เช็ค IP แค่เส้น `withdraw` เส้นเดียว อีก 3 เส้นถูก comment ทิ้ง (`homeController.go:195, 226, 257`) รายการ `WISHLIST_IP` เดิม **ไม่ครบแน่นอน** |
 | 1.3 | ทำความสะอาดรายการ IP | ของเดิม 92 รายการ: ซ้ำ 4, รูปแบบผิด 1 (`43.228.126.241.152.42.192.121` ทำให้ 2 IP ใช้ไม่ได้จริงโดยไม่มีใครรู้), private 8 |
 | 1.4 | เช็คว่ามี service ภายในเรียก gateway ตรง ๆ โดยไม่ผ่าน proxy ไหม | ถ้ามี IP ที่เห็นจะเป็น private (`192.168.x.x`) ต้องคง IP พวกนั้นไว้ |
-| 1.5 | **นับจำนวน proxy ที่คั่นบน prod** | `TRUSTED_PROXY_COUNT` ของ prod อาจไม่เท่า dev ตั้งผิด = allowlist เชื่อถือไม่ได้ทั้งหมด วิธีตรวจอยู่ข้อ 8.2 |
+| 1.5 | **ถ้าอยู่หลัง Cloudflare ให้ตั้ง `CLIENT_IP_HEADER=CF-Connecting-IP`** ไม่ต้องนับ hop | การนับ `TRUSTED_PROXY_COUNT` เปราะมาก ตั้งผิดหรือโครงสร้าง proxy เปลี่ยนเมื่อไหร่ **ทุก request โดน 403 ทันทีโดยไม่มีสัญญาณเตือน** เกิดจริงตอน cutover 2026-09-28 ถ้าไม่มี CDN ที่ให้ header มา ต้องนับเอง แล้ววิธีตรวจอยู่ข้อ 8.2 |
 | 1.6 | ยืนยัน Postgres ของ prod เป็น **เวอร์ชัน 13 ขึ้นไป** | migration ใช้ `gen_random_uuid()` ซึ่งเป็น built-in ตั้งแต่ 13 ถ้าต่ำกว่านั้นต้องมี `pgcrypto` (โค้ดพยายามสร้างให้แบบ best-effort แล้ว) — dev ใช้ 17.11 |
 | 1.7 | ยืนยัน DB user มีสิทธิ์ `CREATE TABLE` | migration รันตอน start ถ้าไม่มีสิทธิ์ service จะตายพร้อม `❌ migration ล้มเหลว` |
 | 1.8 | **ปิดพอร์ต Postgres จากภายนอก** | server ไม่รองรับ TLS (`sslmode=require` → `server does not support SSL`) ทุกการเข้าไปดูข้อมูลจากข้างนอกส่งรหัสผ่านและ `request_body` ที่มีเลขบัญชีลูกค้าเป็น plaintext — ให้เหลือ localhost แล้วใช้ SSH tunnel |
@@ -52,7 +52,8 @@ ALLOWED_IPS=1.2.3.4,5.6.7.8          # รายการจริง ไม่�
 
 # ตามสภาพแวดล้อม
 PORT=80                              # ให้ตรงกับพอร์ตที่ proxy ชี้มา
-TRUSTED_PROXY_COUNT=1                # ตามข้อ 1.5
+TRUSTED_PROXY_COUNT=1                # ตามข้อ 1.5 — ใช้เมื่อไม่ได้ตั้ง CLIENT_IP_HEADER
+CLIENT_IP_HEADER=CF-Connecting-IP    # อยู่หลัง Cloudflare ให้ใช้ตัวนี้แทนการนับ hop
 TZ=Asia/Bangkok                      # ไม่ตั้ง log จะเป็น UTC ต่างจากนาฬิกา 7 ชั่วโมง
 
 # ที่เหลือมี default ใช้ได้เลย

@@ -63,7 +63,8 @@ v1 ใช้สองตัวนี้ไม่เท่ากันด้ว�
 | ตัวแปร | default | ตั้งเมื่อไหร่ |
 |---|---|---|
 | `PORT` | `4000` | dev ตั้ง `80` ตามที่ Easypanel ชี้มา |
-| `TRUSTED_PROXY_COUNT` | `1` | จำนวน proxy ที่คั่น — หลัง Traefik ตัวเดียว = 1, มี Cloudflare ด้วย = 2 **ตั้งผิดแล้ว allowlist เชื่อถือไม่ได้** |
+| `CLIENT_IP_HEADER` | ว่าง | ตั้งเป็น `CF-Connecting-IP` เมื่ออยู่หลัง Cloudflare จะอ่าน IP จาก header ตรง ๆ **ไม่ต้องนับ hop เลย** ปลอมไม่ได้เพราะ Cloudflare เขียนทับให้ทุกครั้ง ถ้าคำขอไม่มี header นี้จะถูกปฏิเสธ (fail-closed) |
+| `TRUSTED_PROXY_COUNT` | `1` | ใช้เมื่อ `CLIENT_IP_HEADER` ว่าง — จำนวน proxy ที่คั่น **ตั้งผิดแล้ว allowlist เชื่อถือไม่ได้** และพังเงียบ ๆ ทั้งระบบ เกิดจริงตอน cutover 2026-09-28 |
 | `RECONCILE_INTERVAL` | `30s` | รอบที่ไปอ่าน DB มาปรับ flow ให้ตรง |
 | `GRACEFUL_TIMEOUT` | `45s` | ต้อง `≥ rpc_timeout + 10s` เสมอ ไม่งั้น deploy ตัดงานที่ค้างอยู่ |
 | `RPC_CHANNEL_POOL` | `4` | AMQP channel ฝั่งรับ HTTP |

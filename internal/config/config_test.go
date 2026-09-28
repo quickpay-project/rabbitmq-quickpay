@@ -135,3 +135,31 @@ func TestMigrateOnStartCanBeDisabled(t *testing.T) {
 		t.Error("MIGRATE_ON_START=false ต้องปิด migration")
 	}
 }
+
+// CLIENT_IP_HEADER ไม่บังคับ ไม่ตั้ง = ว่าง = นับ hop เหมือนเดิม
+func TestClientIPHeaderOptional(t *testing.T) {
+	base := map[string]string{"RABBITMQ_URL": "u", "DATABASE_URL": "d", "QUEUE_PREFIX": "v2."}
+	get := func(m map[string]string) func(string) string {
+		return func(k string) string { return m[k] }
+	}
+	c, err := Load(get(base))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if c.ClientIPHeader != "" {
+		t.Fatalf("ไม่ตั้งต้องได้ค่าว่าง แต่ได้ %q", c.ClientIPHeader)
+	}
+
+	withHdr := map[string]string{}
+	for k, v := range base {
+		withHdr[k] = v
+	}
+	withHdr["CLIENT_IP_HEADER"] = "  CF-Connecting-IP  "
+	c, err = Load(get(withHdr))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if c.ClientIPHeader != "CF-Connecting-IP" {
+		t.Fatalf("ต้องตัดช่องว่างให้ แต่ได้ %q", c.ClientIPHeader)
+	}
+}

@@ -76,9 +76,16 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	ip := ClientIP(r, h.o.Cfg.TrustedProxyCount)
+	ip := ClientIP(r, h.o.Cfg.TrustedProxyCount, h.o.Cfg.ClientIPHeader)
 	if !IsAllowed(ip, h.o.Cfg.AllowedIPs, h.o.Cfg.AllowAllIPs) {
-		h.o.Logf("🚫 ปฏิเสธ IP %s ที่ %s", ip, r.URL.Path)
+		// บอกให้ชัดว่าปฏิเสธเพราะหา IP ไม่ได้ ไม่ใช่เพราะ IP ไม่อยู่ในรายการ
+		// สองกรณีนี้แก้คนละทางและแยกไม่ออกจาก log ที่เขียนว่า "ปฏิเสธ IP " เฉย ๆ
+		if ip == "" && h.o.Cfg.ClientIPHeader != "" {
+			h.o.Logf("🚫 ไม่มี header %s ในคำขอที่ %s — คำขอไม่ได้ผ่าน proxy ที่ประกาศว่าเชื่อถือ",
+				h.o.Cfg.ClientIPHeader, r.URL.Path)
+		} else {
+			h.o.Logf("🚫 ปฏิเสธ IP %s ที่ %s", ip, r.URL.Path)
+		}
 		http.Error(w, "forbidden", http.StatusForbidden)
 		return
 	}
