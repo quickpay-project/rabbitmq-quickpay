@@ -25,14 +25,23 @@ func TestMigrateIsIdempotent(t *testing.T) {
 	if err := Migrate(ctx, db); err != nil {
 		t.Fatalf("Migrate ครั้งที่ 1: %v", err)
 	}
+	// เทียบก่อน/หลัง ไม่ผูกกับจำนวน migration ที่มี ณ วันที่เขียนเทสต์
+	// ไม่งั้นการเพิ่มไฟล์ migration ใหม่จะทำให้เทสต์นี้แดงทั้งที่ไม่มีอะไรเสีย
+	var before int
+	if err := db.QueryRow(`SELECT count(*) FROM schema_migrations`).Scan(&before); err != nil {
+		t.Fatalf("นับ schema_migrations ไม่ได้: %v", err)
+	}
+	if before == 0 {
+		t.Fatal("Migrate ครั้งแรกไม่ได้บันทึกอะไรเลย")
+	}
 	if err := Migrate(ctx, db); err != nil {
 		t.Fatalf("Migrate ครั้งที่ 2 ต้องไม่ error: %v", err)
 	}
-	var n int
-	if err := db.QueryRow(`SELECT count(*) FROM schema_migrations`).Scan(&n); err != nil {
+	var after int
+	if err := db.QueryRow(`SELECT count(*) FROM schema_migrations`).Scan(&after); err != nil {
 		t.Fatalf("นับ schema_migrations ไม่ได้: %v", err)
 	}
-	if n != 1 {
-		t.Errorf("schema_migrations มี %d แถว, want 1 — migration ถูกรันซ้ำ", n)
+	if after != before {
+		t.Errorf("schema_migrations เปลี่ยนจาก %d เป็น %d — migration ถูกรันซ้ำ", before, after)
 	}
 }

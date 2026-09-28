@@ -1,6 +1,10 @@
 package model
 
-import "testing"
+import (
+	"bytes"
+	"encoding/json"
+	"testing"
+)
 
 func TestJSONOrRawKeepsValidJSON(t *testing.T) {
 	in := []byte(`{"amount":100}`)
@@ -48,4 +52,35 @@ func TestExtractRef(t *testing.T) {
 func isValidJSON(b []byte) bool {
 	var v any
 	return jsonUnmarshal(b, &v) == nil
+}
+
+// JSONB ของ Postgres ปฏิเสธ escape ของไบต์ศูนย์ และไบต์ที่ไม่ใช่ UTF-8
+// ทั้งที่ทั้งคู่เป็น JSON ที่ถูกต้องตามมาตรฐาน — body แบบนี้มาถึงได้จริง
+// เพราะเราไม่บังคับว่า caller ต้องส่ง JSON ถ้าปล่อยผ่าน INSERT จะล้ม
+// แล้ว handler ตอบ 503 ทั้งที่ควรแค่บันทึกไว้แล้วทำงานต่อ
+func TestJSONOrRawStripsBytesJSONBRejects(t *testing.T) {
+	zero := byte(0)
+	for _, tc := range []struct {
+		name string
+		body []byte
+	}{
+		{"ไบต์ศูนย์", []byte{zero}},
+		{"ไม่ใช่ UTF-8 ตามด้วยไบต์ศูนย์", []byte{0xff, zero}},
+		{"ปนกับข้อความปกติ", append([]byte("abc"), zero, 0xff)},
+	} {
+		got := JSONOrRaw(tc.body)
+		if !json.Valid(got) {
+			t.Fatalf("%s: ผลลัพธ์ไม่ใช่ JSON ที่ถูกต้อง: %q", tc.name, got)
+		}
+		if bytes.Contains(got, []byte(`\u0000`)) {
+			t.Fatalf("%s: ยังมี escape ของไบต์ศูนย์หลงเหลือ JSONB จะปฏิเสธ: %q", tc.name, got)
+		}
+		var m map[string]string
+		if err := json.Unmarshal(got, &m); err != nil {
+			t.Fatalf("%s: แกะกลับไม่ได้: %v", tc.name, err)
+		}
+		if _, ok := m["raw"]; !ok {
+			t.Fatalf("%s: ต้องถูกห่อด้วยคีย์ raw แต่ได้ %q", tc.name, got)
+		}
+	}
 }

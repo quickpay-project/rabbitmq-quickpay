@@ -18,10 +18,14 @@ type BlockedInput struct {
 }
 
 // RecordBlocked นับเพิ่มทีละครั้ง ไม่เก็บรายรายการ
+//
+// ห้ามใส่ NULLIF ให้ client_ip แม้ค่าจะว่างได้ เพราะคอลัมน์เป็น NOT NULL และอยู่ใน PRIMARY KEY
+// ค่าว่างคือเคส missing_trusted_header ซึ่งเป็นเคสที่ต้องบันทึกให้ได้ที่สุด —
+// ใส่ NULLIF ไปครั้งหนึ่งแล้วทำให้เหตุผลนั้นไม่เคยถูกบันทึกเลย โดยที่ 403 ยังตอบปกติ
 func (s *Store) RecordBlocked(ctx context.Context, in BlockedInput) error {
 	_, err := s.db.ExecContext(ctx, `
 		INSERT INTO blocked_ip (client_ip, path, reason)
-		VALUES (NULLIF($1,''), $2, $3)
+		VALUES ($1, $2, $3)
 		ON CONFLICT (client_ip, path, reason)
 		DO UPDATE SET count = blocked_ip.count + 1, last_seen = now()`,
 		in.ClientIP, in.Path, in.Reason)
