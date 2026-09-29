@@ -93,3 +93,62 @@ func TestRecordBlockedAcceptsEmptyIP(t *testing.T) {
 		t.Fatalf("อยากได้ count=2 แต่ได้ %d", n)
 	}
 }
+
+// first_chain ต้องไม่ถูกเขียนทับ ส่วน last_chain อัปเดตทุกครั้ง
+// ต่างกันเมื่อไหร่แปลว่า caller เปลี่ยนอะไรบางอย่าง ซึ่งเป็นสัญญาณที่มีค่า
+func TestRecordBlockedKeepsFirstChainAndUpdatesLast(t *testing.T) {
+	db := testDB(t)
+	ctx := context.Background()
+	if err := Migrate(ctx, db); err != nil {
+		t.Fatal(err)
+	}
+	s := New(db)
+
+	base := BlockedInput{ClientIP: "1.2.3.4", Path: "/deposit", Reason: BlockedNotInAllowlist}
+	first := base
+	first.Chain = []byte(`{"host":"mq.goquickpay.com"}`)
+	if err := s.RecordBlocked(ctx, first); err != nil {
+		t.Fatal(err)
+	}
+	second := base
+	second.Chain = []byte(`{"host":"deposit-service-mq-v2.ebwved.easypanel.host"}`)
+	if err := s.RecordBlocked(ctx, second); err != nil {
+		t.Fatal(err)
+	}
+
+	var fc, lc, cnt string
+	if err := db.QueryRow(`SELECT first_chain->>'host', last_chain->>'host', count::text
+	                       FROM blocked_ip`).Scan(&fc, &lc, &cnt); err != nil {
+		t.Fatal(err)
+	}
+	if fc != "mq.goquickpay.com" {
+		t.Errorf("first_chain ถูกเขียนทับ: %q", fc)
+	}
+	if lc != "deposit-service-mq-v2.ebwved.easypanel.host" {
+		t.Errorf("last_chain ไม่อัปเดต: %q", lc)
+	}
+	if cnt != "2" {
+		t.Errorf("count = %s", cnt)
+	}
+}
+
+// chain ว่างต้องเก็บเป็น NULL ไม่ใช่ทำให้ INSERT ล้ม
+func TestRecordBlockedAcceptsEmptyChain(t *testing.T) {
+	db := testDB(t)
+	ctx := context.Background()
+	if err := Migrate(ctx, db); err != nil {
+		t.Fatal(err)
+	}
+	s := New(db)
+	if err := s.RecordBlocked(ctx, BlockedInput{ClientIP: "1.2.3.4", Path: "/x",
+		Reason: BlockedNotInAllowlist}); err != nil {
+		t.Fatal(err)
+	}
+	var isNull bool
+	if err := db.QueryRow(`SELECT first_chain IS NULL FROM blocked_ip`).Scan(&isNull); err != nil {
+		t.Fatal(err)
+	}
+	if !isNull {
+		t.Fatal("chain ว่างควรเก็บเป็น NULL")
+	}
+}

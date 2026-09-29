@@ -15,6 +15,9 @@ type BlockedInput struct {
 	ClientIP string
 	Path     string
 	Reason   string
+	// Chain คือ JSON ของ IP ทุกตัวที่เห็นในคำขอนั้น ว่างได้ (เก็บเป็น NULL)
+	// ไว้ตรวจสอบอย่างเดียว ไม่ถูกใช้ตัดสินใจอะไร
+	Chain []byte
 }
 
 // RecordBlocked นับเพิ่มทีละครั้ง ไม่เก็บรายรายการ
@@ -24,11 +27,12 @@ type BlockedInput struct {
 // ใส่ NULLIF ไปครั้งหนึ่งแล้วทำให้เหตุผลนั้นไม่เคยถูกบันทึกเลย โดยที่ 403 ยังตอบปกติ
 func (s *Store) RecordBlocked(ctx context.Context, in BlockedInput) error {
 	_, err := s.db.ExecContext(ctx, `
-		INSERT INTO blocked_ip (client_ip, path, reason)
-		VALUES ($1, $2, $3)
+		INSERT INTO blocked_ip (client_ip, path, reason, first_chain, last_chain)
+		VALUES ($1, $2, $3, $4::jsonb, $4::jsonb)
 		ON CONFLICT (client_ip, path, reason)
-		DO UPDATE SET count = blocked_ip.count + 1, last_seen = now()`,
-		in.ClientIP, in.Path, in.Reason)
+		DO UPDATE SET count = blocked_ip.count + 1, last_seen = now(),
+		              last_chain = EXCLUDED.last_chain`,
+		in.ClientIP, in.Path, in.Reason, nullJSON(in.Chain))
 	return err
 }
 
@@ -87,4 +91,14 @@ func (b *BlockedBuffer) Run(ctx context.Context) {
 			}
 		}
 	}
+}
+
+// nullJSON คืน nil ให้ driver เขียน NULL เมื่อไม่มี chain
+// คอลัมน์เป็น nullable จึงใช้ NULL ได้ ต่างจาก client_ip ที่เป็น NOT NULL
+// (เคยพลาดใส่ NULLIF ให้คอลัมน์นั้นมาแล้ว)
+func nullJSON(b []byte) any {
+	if len(b) == 0 {
+		return nil
+	}
+	return string(b)
 }

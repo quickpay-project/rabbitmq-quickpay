@@ -655,6 +655,31 @@ SELECT * FROM blocked_ip WHERE client_ip LIKE '%:%';
 SELECT * FROM blocked_ip WHERE first_seen > now() - interval '1 hour';
 ```
 
+`first_chain` และ `last_chain` เก็บ **IP ทุกตัวที่เห็นในคำขอนั้น** เป็น JSONB
+ไว้ตรวจสอบอย่างเดียว **ไม่ถูกใช้ตัดสินใจอะไรทั้งสิ้น** — การตัดสินว่า client เป็นใคร
+ยังอยู่ที่ `ClientIP` เหมือนเดิม
+
+```sql
+-- ใครอ้อม Cloudflare เข้ามา (host ไม่ใช่ domain สาธารณะ)
+SELECT client_ip, count, last_chain->>'host' AS เข้าทาง
+FROM blocked_ip WHERE last_chain->>'host' NOT LIKE 'mq.%';
+
+-- เครื่องมือแบบไหนยิงเข้ามา — แยกลูกค้าจริงจากตัวสแกน
+SELECT last_chain->>'ua' AS เครื่องมือ, count(*) AS ip, sum(count) AS ครั้ง
+FROM blocked_ip GROUP BY 1 ORDER BY 3 DESC;
+
+-- มาจากประเทศไหน (Cloudflare ใส่ CF-IPCountry ให้)
+SELECT last_chain->>'cf_ipcountry' AS ประเทศ, sum(count) FROM blocked_ip GROUP BY 1;
+
+-- caller เปลี่ยน config ระหว่างทางไหม
+SELECT client_ip, first_chain, last_chain FROM blocked_ip WHERE first_chain <> last_chain;
+
+-- อ่านด้วยตาแบบสวย ๆ
+SELECT client_ip, jsonb_pretty(last_chain) FROM blocked_ip ORDER BY count DESC;
+```
+
+`cf_ray` ใช้ไปค้นต่อใน log ของ Cloudflare ได้โดยตรง ส่วน `remote` คือ peer จริงที่ปลอมไม่ได้
+
 | `reason` | แปลว่า | แก้ที่ไหน |
 |---|---|---|
 | `not_in_allowlist` | IP ไม่อยู่ใน `ALLOWED_IPS` | เพิ่ม IP หรือดูว่า `TRUSTED_PROXY_COUNT` ถูกไหม |

@@ -16,14 +16,14 @@ func JSONOrRaw(body []byte) []byte {
 	if json.Valid(body) {
 		return body
 	}
-	wrapped, err := json.Marshal(map[string]string{"raw": safeForJSONB(string(body))})
+	wrapped, err := json.Marshal(map[string]string{"raw": SafeForJSONB(string(body))})
 	if err != nil {
 		return []byte(`{"raw":""}`)
 	}
 	return wrapped
 }
 
-// safeForJSONB ทำให้ string ใส่คอลัมน์ JSONB ได้เสมอ
+// SafeForJSONB ทำให้ string ใส่คอลัมน์ JSONB ได้เสมอ
 //
 // สองอย่างที่ JSONB ของ Postgres รับไม่ได้ ทั้งที่เป็น JSON ถูกต้องตามมาตรฐาน:
 //   - ไบต์ 0x00 ซึ่งกลายเป็น escape \u0000 ตอน marshal แล้วโดนปฏิเสธด้วย
@@ -34,7 +34,7 @@ func JSONOrRaw(body []byte) []byte {
 // body แบบนี้มาถึงได้จริงเพราะเราไม่บังคับว่า caller ต้องส่ง JSON
 // และถ้า INSERT ล้ม handler จะตอบ 503 "ระบบบันทึกไม่พร้อม" ทั้งที่ควรแค่บันทึกไว้แล้วทำงานต่อ
 // เจอตอนรัน integration test ครั้งแรก ซึ่งไม่เคยถูกรันมาก่อนเพราะอยู่หลัง build tag
-func safeForJSONB(s string) string {
+func SafeForJSONB(s string) string {
 	s = strings.ToValidUTF8(s, string(rune(0xFFFD)))
 	return strings.ReplaceAll(s, string(rune(0)), "")
 }

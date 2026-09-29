@@ -99,7 +99,8 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			h.o.Logf("🚫 ปฏิเสธ IP %s ที่ %s", ip, r.URL.Path)
 		}
 		if h.o.Blocked != nil {
-			h.o.Blocked.Record(store.BlockedInput{ClientIP: ip, Path: r.URL.Path, Reason: reason})
+			h.o.Blocked.Record(store.BlockedInput{ClientIP: ip, Path: r.URL.Path,
+				Reason: reason, Chain: chainSnapshot(r)})
 		}
 		http.Error(w, "forbidden", http.StatusForbidden)
 		return
